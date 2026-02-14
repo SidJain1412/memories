@@ -521,7 +521,7 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 | `DATA_DIR` | `/data` | Persistent storage path |
 | `WORKSPACE_DIR` | `/workspace` | Read-only workspace for index rebuilds |
 | `API_KEY` | (empty) | API key for auth. Empty = no auth. |
-| `MODEL_NAME` | `all-MiniLM-L6-v2` | Sentence transformer model |
+| `MODEL_NAME` | `all-MiniLM-L6-v2` | Embedding model (ONNX Runtime) |
 | `MAX_BACKUPS` | `10` | Number of backups to keep |
 | `PORT` | `8000` | Internal service port |
 
@@ -540,7 +540,8 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 memories/
   app.py                  # FastAPI REST API
   memory_engine.py        # FAISS engine (search, chunking, BM25, backups)
-  Dockerfile              # Docker image (model pre-downloaded)
+  onnx_embedder.py        # ONNX Runtime embedder (replaces PyTorch)
+  Dockerfile              # Multi-stage Docker build (model pre-downloaded)
   requirements.txt        # Python dependencies
   docker-compose.snippet.yml
   mcp-server/
@@ -560,10 +561,13 @@ memories/
 
 | Metric | Value |
 |--------|-------|
+| Docker image size | ~650MB (ONNX Runtime, multi-stage build) |
 | Search latency | <50ms |
 | Add latency | ~100ms (includes backup) |
-| Model loading | ~2s (pre-downloaded in image) |
+| Model loading | ~3s (pre-downloaded in image) |
 | Memory footprint | ~200MB (container) |
 | Index size | ~1.5KB per memory |
+
+Uses **ONNX Runtime** for inference instead of PyTorch — same model (all-MiniLM-L6-v2), same embeddings, 68% smaller image.
 
 Tested on Mac mini M4 Pro, 16GB RAM.

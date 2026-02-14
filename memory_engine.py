@@ -44,7 +44,7 @@ class MemoryEngine:
         self._model_name = model_name or os.getenv("MODEL_NAME", "all-MiniLM-L6-v2")
         self._max_backups = max_backups or int(os.getenv("MAX_BACKUPS", "10"))
 
-        # Load sentence transformer
+        # Load ONNX embedder (drop-in replacement for SentenceTransformer)
         self.model = OnnxEmbedder(self._model_name)
         self.dim = self.model.get_sentence_embedding_dimension()
 
