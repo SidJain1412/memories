@@ -341,7 +341,7 @@ async def list_backups():
 async def create_backup(prefix: str = Query("manual", max_length=50)):
     """Create manual backup"""
     try:
-        backup_path = memory._backup(prefix=prefix)
+        backup_path = memory.create_backup(prefix=prefix)
         return {
             "success": True,
             "backup_path": str(backup_path),
@@ -404,10 +404,10 @@ async def sync_upload():
     logger.info("Manual cloud upload triggered")
     try:
         # Create a backup first
-        backup_path = memory._backup(prefix="manual")
+        backup_path = memory.create_backup(prefix="manual")
         backup_name = backup_path.name
 
-        # Upload happens automatically in _backup now, but we return the result
+        # Upload happens automatically in create_backup now, but we return the result
         return {
             "success": True,
             "backup_name": backup_name,

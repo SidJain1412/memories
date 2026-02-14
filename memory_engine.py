@@ -716,8 +716,19 @@ class MemoryEngine:
         }
 
     # ------------------------------------------------------------------
-    # Accessors (for API endpoints)
+    # Public API methods (for API endpoints)
     # ------------------------------------------------------------------
+
+    def create_backup(self, prefix: str = "manual") -> Path:
+        """Create a manual backup with optional prefix
+        
+        Args:
+            prefix: Prefix for backup name (e.g., "manual" creates "manual_20260214_120000")
+        
+        Returns:
+            Path to the created backup directory
+        """
+        return self._backup(prefix=prefix)
 
     def get_cloud_sync(self) -> Optional["CloudSync"]:
         """Get cloud sync client (None if not available/enabled)"""

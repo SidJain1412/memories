@@ -181,16 +181,5 @@ class TestCloudSyncOperations(unittest.TestCase):
             self.assertEqual(result["backup_name"], "backup_20260214_120000")
 
 
-class TestCloudSyncIntegration(unittest.TestCase):
-    """Integration tests with MemoryEngine (mocked S3)"""
-
-    def test_memory_engine_auto_download_on_empty(self):
-        """MemoryEngine auto-downloads from cloud if local is empty"""
-        # This would require importing MemoryEngine and mocking extensively
-        # For now, we verify the CloudSync methods work correctly
-        # Full integration test would be done in test_memory_engine.py
-        pass
-
-
 if __name__ == "__main__":
     unittest.main()
