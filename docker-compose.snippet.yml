@@ -2,29 +2,26 @@
 
 services:
   faiss-memory:
-    build: ../clawd/faiss-memory
+    build: ../projects/memories
+    image: faiss-memory:latest
     container_name: faiss-memory
     restart: unless-stopped
     ports:
-      - "8900:8900"  # Only accessible locally (127.0.0.1)
+      - "8900:8000"
     volumes:
-      - faiss-data:/data                      # Persistent index + backups
-      - ~/clawd/memory:/workspace:ro          # Read-only access to memory files
+      - ../projects/memories/data:/data
+      - ~/openclaw/memory:/workspace:ro
     environment:
       - DATA_DIR=/data
       - WORKSPACE_DIR=/workspace
+      - API_KEY=              # Set to enable auth (e.g. API_KEY=my-secret-key)
+      - MODEL_NAME=all-MiniLM-L6-v2
+      - MAX_BACKUPS=10
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8900/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 15s
     networks:
-      - default
-
-volumes:
-  faiss-data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /Users/dk/clawd/faiss-memory/data  # Backup-friendly location
+      - tunnel

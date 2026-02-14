@@ -1,0 +1,12 @@
+data/
+.git/
+.gitignore
+*.md
+integrations/
+docs/
+examples/
+tests/
+__pycache__/
+.pytest_cache/
+.venv/
+.env
