@@ -534,6 +534,65 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 
 ---
 
+## Automatic Memory Layer
+
+Makes memory retrieval and extraction automatic — no manual search/store needed. Hooks inject relevant memories into every prompt and extract facts from every conversation turn.
+
+### How it works
+
+| Event | Hook | What happens |
+|-------|------|-------------|
+| Session start | `memory-recall.sh` | Loads project-specific memories into context |
+| Every prompt | `memory-query.sh` | Retrieves memories relevant to the question |
+| After response | `memory-extract.sh` | Extracts facts and stores via AUDN pipeline |
+| Before compaction | `memory-flush.sh` | Aggressive extraction before context loss |
+| Session end | `memory-commit.sh` | Final extraction pass |
+
+### Quick setup
+
+**Claude Code:**
+```bash
+./integrations/claude-code/install.sh
+```
+
+**Codex:**
+```bash
+./integrations/claude-code/install.sh --codex
+```
+
+**OpenClaw:** Use the updated skill at `integrations/openclaw-skill.md`
+
+**LLM-assisted setup:** Feed [`integrations/QUICKSTART-LLM.md`](integrations/QUICKSTART-LLM.md) to your AI assistant and it will configure everything automatically.
+
+### Extraction providers
+
+| Provider | Cost | AUDN | Speed |
+|----------|------|------|-------|
+| Anthropic (recommended) | ~$0.001/turn | Full (Add/Update/Delete/Noop) | ~1-2s |
+| OpenAI | ~$0.001/turn | Full | ~1-2s |
+| Ollama | Free | Extract only (Add/Noop) | ~5s |
+| Skip | Free | None | N/A |
+
+Extraction is optional. Without it, hooks still retrieve memories — they just don't learn new ones automatically.
+
+### Extraction environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `ollama`, or empty to disable |
+| `EXTRACT_MODEL` | (per provider) | Model override |
+| `ANTHROPIC_API_KEY` | (none) | Required for Anthropic provider |
+| `OPENAI_API_KEY` | (none) | Required for OpenAI provider |
+| `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL |
+
+### Uninstall
+
+```bash
+./integrations/claude-code/install.sh --uninstall
+```
+
+---
+
 ## Backup & Recovery
 
 FAISS Memory has three layers of backup protection:
@@ -641,8 +700,11 @@ memories/
   app.py                  # FastAPI REST API
   memory_engine.py        # FAISS engine (search, chunking, BM25, backups)
   onnx_embedder.py        # ONNX Runtime embedder (replaces PyTorch)
+  llm_provider.py         # LLM provider abstraction (Anthropic/OpenAI/Ollama)
+  llm_extract.py          # Extraction pipeline with AUDN
   Dockerfile              # Multi-stage Docker build (model pre-downloaded)
   requirements.txt        # Python dependencies
+  requirements-extract.txt # Optional extraction deps (Anthropic/OpenAI SDKs)
   docker-compose.snippet.yml
   mcp-server/
     index.js              # MCP server (wraps REST API as tools)
@@ -651,11 +713,18 @@ memories/
     backup.sh             # Cron backup (local snapshots)
     backup-gdrive.sh      # Optional Google Drive upload
     install-cron.sh       # Cron job installer
-  tests/
-    test_memory_engine.py # 25 tests
   integrations/
+    claude-code/
+      install.sh          # Interactive installer for hooks
+      hooks/              # 5 hook scripts + hooks.json
     claude-code.md        # Claude Code guide
     openclaw-skill.md     # OpenClaw SKILL.md
+    QUICKSTART-LLM.md     # LLM-friendly setup guide
+  tests/
+    test_memory_engine.py # Memory engine tests
+    test_llm_provider.py  # LLM provider tests
+    test_llm_extract.py   # Extraction pipeline tests
+    test_extract_api.py   # API endpoint tests
   data/                   # .gitignored — persistent index + backups
 ```
 
