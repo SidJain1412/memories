@@ -117,7 +117,7 @@ Integration docs:
 
 ### Immediate (Seamless + Efficiency)
 
-- [ ] Remove `curl` from runtime image and switch to Python healthcheck to shrink image.
+- [x] Remove `curl` from runtime image and switch to Python healthcheck to shrink image.
 - [ ] Publish two Docker targets/images:
   - core (`search/add/list`, no extraction SDKs)
   - extract (includes extraction provider SDKs)

@@ -30,7 +30,7 @@ services:
       # - CLOUD_SYNC_SECRET_KEY=...
       # - CLOUD_SYNC_ENDPOINT=  # Optional: for MinIO, B2, etc.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if 200 <= urllib.request.urlopen('http://localhost:8000/health', timeout=3).getcode() < 400 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
