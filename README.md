@@ -605,6 +605,34 @@ This detects and configures any available targets on your machine:
 
 Extraction is optional. Without it, hooks still retrieve memories — they just don't learn new ones automatically.
 
+### AUDN in plain English
+
+AUDN is the memory decision loop:
+
+- `ADD`: store a genuinely new fact
+- `UPDATE`: refine an existing memory that is close but outdated/incomplete
+- `DELETE`: remove a stale/conflicting memory
+- `NOOP`: ignore non-useful or duplicate facts
+
+Why it matters:
+- cleaner memory store over time (less duplicate/stale data)
+- better retrieval quality in later sessions
+- less "memory drift" when decisions change
+
+### Cost vs quality
+
+- **Anthropic/OpenAI extraction**: small usage cost (typically around ~$0.001/turn), full AUDN quality.
+- **Ollama extraction**: no API cost, but simplified decisions (`ADD/NOOP` only).
+- **Retrieval only** (`EXTRACT_PROVIDER` unset): no extraction model cost, but no new memories are learned automatically.
+
+### Cost control knobs
+
+Use these to keep extraction spend bounded:
+- `MAX_EXTRACT_MESSAGE_CHARS`: hard cap on transcript size per request
+- `EXTRACT_MAX_FACTS`: limits facts considered from each extraction
+- `EXTRACT_MAX_FACT_CHARS`: caps per-fact payload size
+- `EXTRACT_SIMILAR_TEXT_CHARS` and `EXTRACT_SIMILAR_PER_FACT`: limit context passed into AUDN
+
 ### Async extraction API
 
 `POST /memory/extract` is async-first. It enqueues work and returns `202` with a `job_id`.
@@ -657,7 +685,8 @@ Ollama uses HTTP directly and does not need the extra SDKs, so `core` is enough 
 | `OPENAI_API_KEY` | (none) | Required for OpenAI provider |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL (on Linux, use `http://localhost:11434`) |
 | `EXTRACT_QUEUE_MAX` | `EXTRACT_MAX_INFLIGHT * 20` | Maximum queued extraction jobs before backpressure (`429`) |
-| `EXTRACT_JOB_RETENTION_SEC` | `3600` | How long completed/failed extraction jobs stay queryable |
+| `EXTRACT_JOB_RETENTION_SEC` | `300` | How long completed/failed extraction jobs stay queryable |
+| `EXTRACT_JOBS_MAX` | `200` | Hard cap on stored extraction job records (finished jobs evicted first) |
 | `EXTRACT_MAX_FACTS` | `30` | Maximum facts kept from a single extraction |
 | `EXTRACT_MAX_FACT_CHARS` | `500` | Max length per extracted fact |
 | `EXTRACT_SIMILAR_TEXT_CHARS` | `280` | Max similar-memory text length passed into AUDN |
