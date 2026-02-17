@@ -119,9 +119,16 @@ class TestExtractEndpoint:
 
     def test_extract_returns_429_when_queue_full(self, client):
         test_client, _ = client
+        import asyncio
+        import app as app_module
+
+        # Replace the queue with a tiny bounded queue that's already full
+        tiny_queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+        tiny_queue.put_nowait({"job_id": "dummy", "request": {"messages": "", "source": "", "context": ""}})
+
         with patch("app.extract_provider", MagicMock()), \
              patch("app.run_extraction", MagicMock()), \
-             patch("app.EXTRACT_QUEUE_MAX", 0):
+             patch.object(app_module, "extract_queue", tiny_queue):
             response = test_client.post(
                 "/memory/extract",
                 json={"messages": "test", "source": "test", "context": "stop"},

@@ -94,13 +94,14 @@ def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
 MAX_EXTRACT_MESSAGE_CHARS = _env_int("MAX_EXTRACT_MESSAGE_CHARS", 120000)
 EXTRACT_MAX_INFLIGHT = _env_int("EXTRACT_MAX_INFLIGHT", 2)
 EXTRACT_QUEUE_MAX = _env_int("EXTRACT_QUEUE_MAX", EXTRACT_MAX_INFLIGHT * 20, minimum=1)
-EXTRACT_JOB_RETENTION_SEC = _env_int("EXTRACT_JOB_RETENTION_SEC", 3600, minimum=60)
+EXTRACT_JOB_RETENTION_SEC = _env_int("EXTRACT_JOB_RETENTION_SEC", 300, minimum=60)
+EXTRACT_JOBS_MAX = _env_int("EXTRACT_JOBS_MAX", 200, minimum=10)
 MEMORY_TRIM_ENABLED = _env_bool("MEMORY_TRIM_ENABLED", True)
 MEMORY_TRIM_COOLDOWN_SEC = _env_float("MEMORY_TRIM_COOLDOWN_SEC", 15.0)
 METRICS_LATENCY_SAMPLES = _env_int("METRICS_LATENCY_SAMPLES", 200, minimum=20)
 METRICS_TREND_SAMPLES = _env_int("METRICS_TREND_SAMPLES", 120, minimum=5)
 
-extract_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+extract_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=EXTRACT_QUEUE_MAX)
 extract_jobs: Dict[str, Dict[str, Any]] = {}
 extract_workers: List[asyncio.Task] = []
 memory_trimmer = MemoryTrimmer(
@@ -120,7 +121,7 @@ async def verify_api_key(request: Request):
     if not API_KEY:
         return  # No auth configured
     path = request.url.path
-    if path == "/health" or path.startswith("/ui"):
+    if path == "/health" or path == "/ui" or path.startswith("/ui/"):
         return  # Allow unauthenticated health checks + UI shell/static files
     key = request.headers.get("X-API-Key", "")
     if key != API_KEY:
@@ -237,6 +238,17 @@ def _trim_finished_extract_jobs() -> None:
     for job_id in stale_job_ids:
         extract_jobs.pop(job_id, None)
 
+    # Enforce hard cap: evict oldest finished jobs when dict exceeds limit
+    if len(extract_jobs) > EXTRACT_JOBS_MAX:
+        finished = [
+            (jid, j) for jid, j in extract_jobs.items()
+            if j.get("status") in {"completed", "failed"}
+        ]
+        finished.sort(key=lambda x: x[1].get("completed_at", ""))
+        to_evict = len(extract_jobs) - EXTRACT_JOBS_MAX
+        for jid, _ in finished[:to_evict]:
+            extract_jobs.pop(jid, None)
+
 
 def _ensure_extract_workers_started() -> None:
     if extract_provider is None or run_extraction is None:
@@ -304,6 +316,18 @@ async def _extract_worker(worker_id: int) -> None:
             _trim_finished_extract_jobs()
 
 
+async def _periodic_job_cleanup() -> None:
+    """Trim stale extract_jobs every 60 seconds."""
+    while True:
+        try:
+            await asyncio.sleep(60)
+            _trim_finished_extract_jobs()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.debug("Periodic job cleanup error", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global memory
@@ -316,7 +340,10 @@ async def lifespan(app: FastAPI):
         memory.dim,
     )
     _ensure_extract_workers_started()
+    cleanup_task = asyncio.create_task(_periodic_job_cleanup(), name="job-cleanup")
     yield
+    cleanup_task.cancel()
+    await asyncio.gather(cleanup_task, return_exceptions=True)
     if extract_workers:
         logger.info("Stopping extraction workers...")
         for task in extract_workers:
@@ -833,8 +860,31 @@ async def memory_extract(request: ExtractRequest):
     """Queue extraction and return immediately."""
     if extract_provider is None or run_extraction is None:
         raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
-    queue_depth = extract_queue.qsize()
-    if queue_depth >= EXTRACT_QUEUE_MAX:
+    _ensure_extract_workers_started()
+    job_id = uuid4().hex
+    extract_jobs[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "source": request.source,
+        "context": request.context,
+        "message_length": len(request.messages),
+        "created_at": _utc_now_iso(),
+    }
+    try:
+        extract_queue.put_nowait(
+            {
+                "job_id": job_id,
+                "request": {
+                    "messages": request.messages,
+                    "source": request.source,
+                    "context": request.context,
+                },
+            }
+        )
+    except asyncio.QueueFull:
+        # Remove the job we just registered since it won't be processed
+        extract_jobs.pop(job_id, None)
+        queue_depth = extract_queue.qsize()
         retry_after_sec = max(1, min(30, (queue_depth // max(1, EXTRACT_MAX_INFLIGHT)) + 1))
         logger.warning(
             "Extract queue full: depth=%d max=%d",
@@ -852,27 +902,6 @@ async def memory_extract(request: ExtractRequest):
             },
             headers={"Retry-After": str(retry_after_sec)},
         )
-
-    _ensure_extract_workers_started()
-    job_id = uuid4().hex
-    extract_jobs[job_id] = {
-        "job_id": job_id,
-        "status": "queued",
-        "source": request.source,
-        "context": request.context,
-        "message_length": len(request.messages),
-        "created_at": _utc_now_iso(),
-    }
-    await extract_queue.put(
-        {
-            "job_id": job_id,
-            "request": {
-                "messages": request.messages,
-                "source": request.source,
-                "context": request.context,
-            },
-        }
-    )
     _trim_finished_extract_jobs()
     logger.info(
         "Extract queued: job_id=%s source=%s context=%s queue_depth=%d",

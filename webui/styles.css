@@ -1,5 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;600&display=swap');
-
+/* System font stack — no external requests, aligns with local-first positioning */
 :root {
   --bg: #0f1724;
   --bg-soft: #1d2a3f;
@@ -19,7 +18,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: "Space Grotesk", "Avenir Next", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Avenir Next", sans-serif;
   color: var(--text);
   background: radial-gradient(circle at 20% 10%, #1e3050 0%, var(--bg) 40%, #0a111d 100%);
 }
@@ -52,7 +51,7 @@ body {
 .eyebrow {
   margin: 0;
   color: var(--accent);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, monospace;
   font-size: 0.77rem;
   letter-spacing: 0.14em;
 }
@@ -138,7 +137,7 @@ button:focus {
 }
 
 .status {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, monospace;
   font-size: 0.8rem;
   color: var(--text-soft);
 }
@@ -194,7 +193,7 @@ button:focus {
 }
 
 .memory-id {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, monospace;
   color: var(--accent);
   font-size: 0.82rem;
 }
