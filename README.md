@@ -583,16 +583,31 @@ Makes memory retrieval and extraction automatic — no manual search/store neede
 
 Extraction is optional. Without it, hooks still retrieve memories — they just don't learn new ones automatically.
 
-### Building with extraction support
+### Docker image targets (core / extract)
 
-The Anthropic/OpenAI SDKs are not included in the default image. To enable extraction, rebuild with the `ENABLE_EXTRACT` flag:
+The Dockerfile publishes two runtime targets:
+
+- `core` (default): search/add/list endpoints, no Anthropic/OpenAI SDKs
+- `extract`: includes Anthropic/OpenAI SDKs for `/memory/extract`
+
+Build both images directly:
 
 ```bash
-docker compose build --build-arg ENABLE_EXTRACT=true faiss-memory
-docker compose up -d faiss-memory
+docker build --target core -t faiss-memory:core .
+docker build --target extract -t faiss-memory:extract .
 ```
 
-Ollama uses HTTP directly and does not need the SDKs — it works with the default image.
+Use compose with either target:
+
+```bash
+# Default (core target)
+docker compose up -d --build faiss-memory
+
+# Extraction-ready target
+FAISS_IMAGE_TARGET=extract docker compose up -d --build faiss-memory
+```
+
+Ollama uses HTTP directly and does not need the extra SDKs, so `core` is enough for Ollama extraction.
 
 ### Extraction environment variables
 
@@ -721,7 +736,7 @@ export GDRIVE_ACCOUNT="your-email@gmail.com"
 For S3/MinIO/R2 backends, build with cloud sync enabled:
 
 ```bash
-docker compose build --build-arg ENABLE_CLOUD_SYNC=true faiss-memory
+ENABLE_CLOUD_SYNC=true docker compose up -d --build faiss-memory
 ```
 
 See [CLOUD_SYNC_README.md](CLOUD_SYNC_README.md) for configuration details.

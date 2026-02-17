@@ -14,7 +14,8 @@ Cloud sync is **opt-in** to keep the Docker image lean (saves ~80MB).
 Build the image with cloud sync enabled:
 
 ```bash
-docker build --build-arg ENABLE_CLOUD_SYNC=true -t faiss-memory:latest .
+docker build --target core --build-arg ENABLE_CLOUD_SYNC=true -t faiss-memory:core .
+# or: docker build --target extract --build-arg ENABLE_CLOUD_SYNC=true -t faiss-memory:extract .
 ```
 
 ### Option 2: Install Manually (if already running)

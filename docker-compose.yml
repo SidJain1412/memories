@@ -1,7 +1,11 @@
 services:
   faiss-memory:
-    build: .
-    image: faiss-memory:latest
+    build:
+      context: .
+      target: ${FAISS_IMAGE_TARGET:-core}
+      args:
+        ENABLE_CLOUD_SYNC: ${ENABLE_CLOUD_SYNC:-false}
+    image: faiss-memory:${FAISS_IMAGE_TARGET:-core}
     container_name: faiss-memory
     restart: unless-stopped
     ports:

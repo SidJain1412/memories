@@ -76,7 +76,8 @@ Memory controls:
 
 - Tests: `./.venv/bin/python -m pytest -q`
 - Local run: `./.venv/bin/python -m uvicorn app:app --reload`
-- Docker build: `docker build -t faiss-memory:dev .`
+- Docker build (core): `docker build --target core -t faiss-memory:core .`
+- Docker build (extract): `docker build --target extract -t faiss-memory:extract .`
 
 When changing memory/index behavior:
 
@@ -118,7 +119,7 @@ Integration docs:
 ### Immediate (Seamless + Efficiency)
 
 - [x] Remove `curl` from runtime image and switch to Python healthcheck to shrink image.
-- [ ] Publish two Docker targets/images:
+- [x] Publish two Docker targets/images:
   - core (`search/add/list`, no extraction SDKs)
   - extract (includes extraction provider SDKs)
 - [ ] Optionally move model download to first-run volume cache for smaller image pulls.
