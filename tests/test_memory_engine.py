@@ -230,3 +230,31 @@ class TestRebuildFromFiles:
         result = engine.rebuild_from_files(["/nonexistent/file.md"])
         assert result["files_processed"] == 0
         assert result["memories_added"] == 0
+
+
+class TestSupersede:
+    """Test memory supersede (targeted update with audit trail)."""
+
+    def test_supersede_replaces_memory(self, populated_engine):
+        """Supersede deletes old memory and adds new one with link."""
+        old_count = populated_engine.index.ntotal
+        old_id = 0  # first memory in populated_engine
+
+        result = populated_engine.supersede(
+            old_id=old_id,
+            new_text="Updated: switched from Prisma to Drizzle",
+            source="test/supersede"
+        )
+
+        assert result["old_id"] == old_id
+        assert result["new_id"] is not None
+        assert populated_engine.index.ntotal == old_count  # same count (delete + add)
+
+    def test_supersede_nonexistent_id_raises(self, populated_engine):
+        """Superseding a nonexistent memory raises ValueError."""
+        with pytest.raises(ValueError, match="not found"):
+            populated_engine.supersede(
+                old_id=9999,
+                new_text="does not matter",
+                source="test"
+            )
