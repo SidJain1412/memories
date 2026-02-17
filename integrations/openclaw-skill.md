@@ -28,7 +28,7 @@ Local semantic memory using FAISS vector search + BM25 hybrid retrieval (Docker 
 ## Prerequisites
 
 - Docker service running: `docker ps | grep faiss-memory`
-- If not running: `cd ~/web && docker-compose up -d faiss-memory`
+- If not running: `cd /path/to/memories && docker compose up -d faiss-memory`
 - `FAISS_API_KEY` env var must be set (loaded from shell profile)
 
 ## Commands
@@ -313,13 +313,90 @@ function memory_health() {
 memory_health
 ```
 
+### Recall Project Context (Auto)
+
+Call this at the start of any task to load relevant project memories:
+
+```bash
+function memory_recall_faiss() {
+    local project="${1:-$(basename "$PWD")}"
+    local k="${2:-8}"
+
+    local payload
+    payload=$(jq -n \
+        --arg q "project $project conventions decisions patterns" \
+        --argjson k "$k" \
+        '{query: $q, k: $k, hybrid: true}')
+
+    local results
+    results=$(curl -s -X POST http://localhost:8900/search \
+        -H "Content-Type: application/json" \
+        -H "X-API-Key: $FAISS_API_KEY" \
+        -d "$payload" \
+    | jq -r '[.results[] | select(.similarity > 0.3)] | .[0:8] | map("- \(.text)") | join("\n")')
+
+    if [[ -n "$results" && "$results" != "null" ]]; then
+        echo "## Relevant Memories"
+        echo ""
+        echo "$results"
+    else
+        echo "No relevant memories found for project: $project"
+    fi
+}
+
+# Usage — call at the start of every task
+memory_recall_faiss
+memory_recall_faiss "my-project" 10
+```
+
+### Extract Facts from Conversation (Auto)
+
+Call this after completing significant tasks to store new learnings:
+
+```bash
+function memory_extract_faiss() {
+    local messages="$1"
+    local source="${2:-openclaw/$(basename "$PWD")}"
+    local context="${3:-stop}"
+
+    local payload
+    payload=$(jq -n \
+        --arg m "$messages" \
+        --arg s "$source" \
+        --arg c "$context" \
+        '{messages: $m, source: $s, context: $c}')
+
+    curl -s -X POST http://localhost:8900/memory/extract \
+        -H "Content-Type: application/json" \
+        -H "X-API-Key: $FAISS_API_KEY" \
+        -d "$payload" \
+    | jq '.'
+}
+
+# Usage — call after completing tasks
+memory_extract_faiss "User: use drizzle\nAssistant: Good choice, switching from Prisma"
+memory_extract_faiss "conversation text" "openclaw/my-project" "session_end"
+```
+
 ## Typical Workflows
 
 ### Daily Use (Automatic)
 
-When I (Jack) need to search memories:
+At the start of every task, recall relevant project context:
+```bash
+memory_recall_faiss
+```
+
+When you need to search for something specific:
 ```bash
 memory_search_faiss "your query" 5
+```
+
+### After Task Completion
+
+Extract and store new learnings from the conversation:
+```bash
+memory_extract_faiss "summary of conversation or key decisions"
 ```
 
 ### Add Important Fact
@@ -349,9 +426,9 @@ memory_backup "before_openclaw_upgrade_$(date +%Y%m%d)"
 
 During heartbeats, I can:
 
-1. **Extract new learnings** from conversation
-2. **Check novelty** with `memory_is_novel`
-3. **Add if novel** with `memory_add_faiss` (auto-dedup enabled)
+1. **Extract new learnings** using `memory_extract_faiss` (preferred — sends conversation to the extract endpoint which handles fact extraction, novelty checking, and storage in one call)
+2. **Manual alternative**: Check novelty with `memory_is_novel`, then add if novel with `memory_add_faiss` (auto-dedup enabled)
+3. **Recall context** at task start with `memory_recall_faiss`
 4. **Auto-backup** handled by service
 
 ## Troubleshooting
@@ -360,7 +437,7 @@ During heartbeats, I can:
 ```bash
 docker ps | grep faiss-memory
 docker logs -f faiss-memory
-cd ~/web && docker-compose restart faiss-memory
+cd /path/to/memories && docker compose restart faiss-memory
 ```
 
 ### Empty search results
@@ -381,5 +458,5 @@ memory_restore "BACKUP_NAME"
 - Survives OpenClaw restarts/upgrades
 - Backups created automatically before destructive ops
 - Read-only access to workspace files
-- All data persists in bind mount: `/Users/dk/projects/memories/data/`
+- All data persists in the bind-mounted `./data/` directory (configured in `docker-compose.yml`)
 - API docs available at http://localhost:8900/docs

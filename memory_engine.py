@@ -363,6 +363,49 @@ class MemoryEngine:
 
         return {"deleted_id": memory_id, "deleted_text": deleted["text"][:100]}
 
+    def supersede(self, old_id: int, new_text: str, source: str = "") -> dict:
+        """Replace a memory with an updated version, preserving audit trail.
+
+        Deletes the old memory and creates a new one with metadata linking
+        back to the original.
+
+        Args:
+            old_id: ID of the memory to supersede
+            new_text: Updated memory text
+            source: Source identifier for the new memory
+
+        Returns:
+            dict with old_id, new_id, and previous_text
+
+        Raises:
+            ValueError: if old_id doesn't exist
+        """
+        # Verify old memory exists
+        if old_id < 0 or old_id >= len(self.metadata):
+            raise ValueError(f"Memory {old_id} not found")
+
+        previous_text = self.metadata[old_id].get("text", "")
+
+        # Delete old
+        self.delete_memory(old_id)
+
+        # Add new with supersede metadata
+        added_ids = self.add_memories(
+            texts=[new_text],
+            sources=[source],
+            deduplicate=False,
+        )
+        new_id = added_ids[0] if added_ids else None
+
+        # Store supersede info in metadata
+        if new_id is not None and new_id < len(self.metadata) and self.metadata[new_id]:
+            self.metadata[new_id]["supersedes"] = old_id
+            self.metadata[new_id]["previous_text"] = previous_text
+            self.save()
+
+        logger.info("Superseded memory %d → %d", old_id, new_id)
+        return {"old_id": old_id, "new_id": new_id, "previous_text": previous_text}
+
     def delete_by_source(self, source_pattern: str) -> Dict[str, Any]:
         """Delete all memories matching a source pattern"""
         with self._write_lock:
