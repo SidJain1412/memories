@@ -3,12 +3,13 @@
 Supports Anthropic, OpenAI, and Ollama. Configured via environment variables:
   EXTRACT_PROVIDER: "anthropic", "openai", or "ollama" (empty = disabled)
   EXTRACT_MODEL: model name (defaults per provider)
-  ANTHROPIC_API_KEY: required for anthropic
+  ANTHROPIC_API_KEY: required for anthropic (standard key or sk-ant-oat01- OAuth token)
   OPENAI_API_KEY: required for openai
   OLLAMA_URL: ollama server URL (default: http://host.docker.internal:11434)
 """
 import os
 import json
+import time
 import logging
 import urllib.request
 import urllib.error
@@ -42,8 +43,62 @@ class LLMProvider(ABC):
         ...
 
 
+def _is_oauth_token(key: str) -> bool:
+    """Check if an Anthropic key is an OAuth subscription token."""
+    return key.startswith("sk-ant-oat01-")
+
+
+OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
+
+
+class _OAuthState:
+    """Tracks OAuth access/refresh tokens and expiry for Anthropic subscription tokens."""
+
+    def __init__(self, access_token: str):
+        self.access_token = access_token
+        self.refresh_token: str | None = None
+        self.expires_at: float | None = None
+
+    def is_expired(self) -> bool:
+        if self.expires_at is None:
+            return False
+        return time.time() >= self.expires_at
+
+    def refresh(self) -> bool:
+        """Refresh the OAuth token. Returns True on success."""
+        if not self.refresh_token:
+            return False
+        try:
+            payload = json.dumps({
+                "grant_type": "refresh_token",
+                "refresh_token": self.refresh_token,
+                "client_id": OAUTH_CLIENT_ID,
+            }).encode()
+            req = urllib.request.Request(
+                OAUTH_TOKEN_URL,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            self.access_token = data["access_token"]
+            self.refresh_token = data["refresh_token"]
+            self.expires_at = time.time() + data["expires_in"]
+            logger.info("OAuth token refreshed successfully")
+            return True
+        except Exception as e:
+            logger.warning("OAuth token refresh failed: %s", e)
+            return False
+
+
 class AnthropicProvider(LLMProvider):
-    """Anthropic API provider (Claude models)."""
+    """Anthropic API provider (Claude models).
+
+    Supports both standard API keys and OAuth subscription tokens (sk-ant-oat01-).
+    OAuth tokens use Bearer auth via the SDK's auth_token parameter and auto-refresh.
+    """
 
     provider_name = "anthropic"
     supports_audn = True
@@ -56,9 +111,40 @@ class AnthropicProvider(LLMProvider):
                 "anthropic package required. Install with: pip install anthropic>=0.40.0"
             )
         self.model = model or DEFAULT_MODELS["anthropic"]
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self._oauth: _OAuthState | None = None
+
+        if _is_oauth_token(api_key):
+            self._oauth = _OAuthState(access_token=api_key)
+            # Temporarily clear ANTHROPIC_API_KEY so the SDK doesn't
+            # auto-read it and send both X-Api-Key and Authorization headers.
+            # The server rejects OAuth tokens in the X-Api-Key header.
+            saved_key = os.environ.pop("ANTHROPIC_API_KEY", None)
+            try:
+                self.client = anthropic.Anthropic(auth_token=api_key)
+            finally:
+                if saved_key is not None:
+                    os.environ["ANTHROPIC_API_KEY"] = saved_key
+            logger.info("Using OAuth subscription token (sk-ant-oat01-)")
+        else:
+            self.client = anthropic.Anthropic(api_key=api_key)
+
+    def _ensure_fresh_token(self) -> None:
+        """Refresh the OAuth token if expired and rebuild the client."""
+        if self._oauth is None or not self._oauth.is_expired():
+            return
+        if self._oauth.refresh():
+            import anthropic
+            saved_key = os.environ.pop("ANTHROPIC_API_KEY", None)
+            try:
+                self.client = anthropic.Anthropic(
+                    auth_token=self._oauth.access_token
+                )
+            finally:
+                if saved_key is not None:
+                    os.environ["ANTHROPIC_API_KEY"] = saved_key
 
     def complete(self, system: str, user: str) -> str:
+        self._ensure_fresh_token()
         response = self.client.messages.create(
             model=self.model,
             max_tokens=1024,

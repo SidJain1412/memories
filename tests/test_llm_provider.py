@@ -2,7 +2,8 @@
 import os
 import pytest
 import json
-from unittest.mock import patch, MagicMock
+import time
+from unittest.mock import patch, MagicMock, PropertyMock
 
 
 class TestProviderFactory:
@@ -46,6 +47,127 @@ class TestProviderFactory:
             assert provider is not None
             assert provider.provider_name == "ollama"
             assert provider.supports_audn is False
+
+
+class TestAnthropicOAuth:
+    """Test Anthropic OAuth subscription token support."""
+
+    def test_standard_key_no_oauth(self):
+        """Standard API key should not create OAuth state."""
+        env = {"EXTRACT_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "sk-ant-api03-fake"}
+        with patch.dict(os.environ, env):
+            mock_anthropic = MagicMock()
+            with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
+                from llm_provider import get_provider
+                provider = get_provider()
+                assert provider._oauth is None
+                mock_anthropic.Anthropic.assert_called_once_with(api_key="sk-ant-api03-fake")
+
+    def test_oauth_token_creates_oauth_state(self):
+        """OAuth token (sk-ant-oat01-) should use auth_token and create OAuth state."""
+        env = {"EXTRACT_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "sk-ant-oat01-faketoken"}
+        with patch.dict(os.environ, env):
+            mock_anthropic = MagicMock()
+            with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
+                from llm_provider import get_provider
+                provider = get_provider()
+                assert provider._oauth is not None
+                assert provider._oauth.access_token == "sk-ant-oat01-faketoken"
+                mock_anthropic.Anthropic.assert_called_once_with(auth_token="sk-ant-oat01-faketoken")
+
+    def test_oauth_token_detection(self):
+        """Verify the OAuth token detection helper."""
+        from llm_provider import _is_oauth_token
+        assert _is_oauth_token("sk-ant-oat01-abc123") is True
+        assert _is_oauth_token("sk-ant-api03-abc123") is False
+        assert _is_oauth_token("") is False
+
+    def test_oauth_state_not_expired_initially(self):
+        """Fresh OAuth state with no expiry should not be expired."""
+        from llm_provider import _OAuthState
+        state = _OAuthState(access_token="test-token")
+        assert state.is_expired() is False
+
+    def test_oauth_state_expired_when_past_deadline(self):
+        """OAuth state should report expired when past expires_at."""
+        from llm_provider import _OAuthState
+        state = _OAuthState(access_token="test-token")
+        state.expires_at = time.time() - 10  # 10 seconds ago
+        assert state.is_expired() is True
+
+    def test_oauth_refresh_updates_tokens(self):
+        """Successful refresh should update access_token, refresh_token, and expires_at."""
+        from llm_provider import _OAuthState
+        state = _OAuthState(access_token="old-token")
+        state.refresh_token = "old-refresh"
+        state.expires_at = time.time() - 10  # expired
+
+        refresh_response = json.dumps({
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_in": 3600,
+        }).encode()
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = refresh_response
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("llm_provider.urllib.request.urlopen", return_value=mock_resp):
+            result = state.refresh()
+
+        assert result is True
+        assert state.access_token == "new-access"
+        assert state.refresh_token == "new-refresh"
+        assert state.expires_at > time.time()
+
+    def test_oauth_refresh_fails_without_refresh_token(self):
+        """Refresh should fail gracefully when no refresh_token is set."""
+        from llm_provider import _OAuthState
+        state = _OAuthState(access_token="test-token")
+        assert state.refresh() is False
+
+    def test_oauth_refresh_handles_network_error(self):
+        """Refresh should return False on network error."""
+        from llm_provider import _OAuthState
+        state = _OAuthState(access_token="test-token")
+        state.refresh_token = "some-refresh"
+
+        with patch("llm_provider.urllib.request.urlopen", side_effect=Exception("network error")):
+            result = state.refresh()
+
+        assert result is False
+
+    def test_ensure_fresh_token_refreshes_when_expired(self):
+        """AnthropicProvider should refresh the client when OAuth token expires."""
+        env = {"EXTRACT_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "sk-ant-oat01-faketoken"}
+        with patch.dict(os.environ, env):
+            mock_anthropic = MagicMock()
+            with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
+                from llm_provider import get_provider
+                provider = get_provider()
+
+                # Simulate expiry
+                provider._oauth.expires_at = time.time() - 10
+                provider._oauth.refresh_token = "refresh-token"
+
+                refresh_response = json.dumps({
+                    "access_token": "refreshed-token",
+                    "refresh_token": "new-refresh",
+                    "expires_in": 3600,
+                }).encode()
+
+                mock_resp = MagicMock()
+                mock_resp.read.return_value = refresh_response
+                mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+                mock_resp.__exit__ = MagicMock(return_value=False)
+
+                with patch("llm_provider.urllib.request.urlopen", return_value=mock_resp):
+                    provider._ensure_fresh_token()
+
+                # Client should have been rebuilt with new token
+                assert mock_anthropic.Anthropic.call_count == 2  # initial + refresh
+                mock_anthropic.Anthropic.assert_called_with(auth_token="refreshed-token")
 
 
 class TestOllamaProvider:
