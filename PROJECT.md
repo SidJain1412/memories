@@ -76,7 +76,8 @@ Memory controls:
 
 - Tests: `./.venv/bin/python -m pytest -q`
 - Local run: `./.venv/bin/python -m uvicorn app:app --reload`
-- Docker build: `docker build -t faiss-memory:dev .`
+- Docker build (core): `docker build --target core -t faiss-memory:core .`
+- Docker build (extract): `docker build --target extract -t faiss-memory:extract .`
 
 When changing memory/index behavior:
 
@@ -110,3 +111,37 @@ Integration docs:
 - Public docs avoid product-specific assumptions unless the file is intentionally integration-specific
 - Benchmarks describe workload profile and caveats
 - Versioned behavior changes documented in `README.md`
+
+---
+
+## Roadmap / TODO
+
+### Immediate (Seamless + Efficiency)
+
+- [x] Remove `curl` from runtime image and switch to Python healthcheck to shrink image.
+- [x] Publish two Docker targets/images:
+  - core (`search/add/list`, no extraction SDKs)
+  - extract (includes extraction provider SDKs)
+- [x] Optionally move model download to first-run volume cache for smaller image pulls.
+- [x] Make `/memory/extract` async-first (accept + queue, return `202`).
+- [x] Add extraction backpressure with `429` and retry hints when queue is full.
+- [x] Ship one-command installer that auto-detects Claude Code/Codex/OpenClaw config targets.
+- [x] Add `/metrics` endpoint (latency, queue depth, error rates, memory trend).
+
+### v1.1 (Next)
+
+- [x] Web UI for browsing memories.
+- [ ] Auto-rebuild on file changes (watch mode).
+- [x] Memory deduplication tool (`/memory/deduplicate`) is implemented.
+- [ ] Export formats (JSON, Markdown, CSV).
+- [x] MCP server implementation is shipped (`mcp-server/index.js`).
+- [x] OpenClaw `memory_search` integration is available (`integrations/openclaw-skill.md`).
+
+### v1.2 (Future)
+
+- [ ] Multi-index support (different projects).
+- [x] Hybrid search (semantic + keyword) is implemented (FAISS + BM25 + RRF).
+- [ ] Memory tagging system.
+- [ ] Search filters by source/date/type (source exists; date/type pending).
+- [ ] Scheduled index rebuilds via cron.
+- [ ] Memory analytics dashboard.

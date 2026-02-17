@@ -4,9 +4,13 @@ Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector se
 
 Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
+Start here:
+- [Getting Started (10-15 min)](GETTING_STARTED.md)
+- [LLM-assisted setup guide](integrations/QUICKSTART-LLM.md)
+
 ---
 
-## Quick Start
+## API Quick Start
 
 ```bash
 # 1. Clone and build
@@ -28,7 +32,7 @@ curl -X POST http://localhost:8900/search \
   -d '{"query": "TypeScript config", "k": 3, "hybrid": true}'
 ```
 
-The service runs at **http://localhost:8900**. API docs at http://localhost:8900/docs.
+The service runs at **http://localhost:8900**. API docs at http://localhost:8900/docs. Memory browser UI at http://localhost:8900/ui.
 
 ---
 
@@ -487,6 +491,7 @@ POST /memory/deduplicate
 POST /index/build    {"sources": ["file1.md", "file2.md"]}
 GET  /stats
 GET  /health
+GET  /metrics
 ```
 
 ### Backups
@@ -495,6 +500,14 @@ GET  /health
 GET  /backups
 POST /backup?prefix=manual
 POST /restore          {"backup_name": "manual_20260213_120000"}
+```
+
+### Extraction
+
+```
+POST /memory/extract    {"messages": "...", "source": "proj", "context": "stop"}  # 202 queued
+GET  /memory/extract/{job_id}
+GET  /extract/status
 ```
 
 Full OpenAPI schema at http://localhost:8900/docs.
@@ -526,11 +539,15 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 | `WORKSPACE_DIR` | `/workspace` | Read-only workspace for index rebuilds |
 | `API_KEY` | (empty) | API key for auth. Empty = no auth. |
 | `MODEL_NAME` | `all-MiniLM-L6-v2` | Embedding model (ONNX Runtime) |
+| `MODEL_CACHE_DIR` | (unset; Docker image sets `/data/model-cache`) | Optional writable cache path for downloaded model files |
+| `PRELOADED_MODEL_CACHE_DIR` | (unset; Docker image sets `/opt/model-cache`) | Optional read-only cache to seed `MODEL_CACHE_DIR` when empty |
 | `MAX_BACKUPS` | `10` | Number of backups to keep |
 | `MAX_EXTRACT_MESSAGE_CHARS` | `120000` | Max characters accepted by `/memory/extract` |
 | `EXTRACT_MAX_INFLIGHT` | `2` | Max concurrent extraction jobs |
 | `MEMORY_TRIM_ENABLED` | `true` | Run post-extract GC/allocator trim |
 | `MEMORY_TRIM_COOLDOWN_SEC` | `15` | Minimum seconds between trim attempts |
+| `METRICS_LATENCY_SAMPLES` | `200` | Per-route latency sample window for `/metrics` percentiles |
+| `METRICS_TREND_SAMPLES` | `120` | Memory trend sample window exposed by `/metrics` |
 | `PORT` | `8000` | Internal service port |
 
 ### MCP Server Environment
@@ -558,17 +575,26 @@ Makes memory retrieval and extraction automatic — no manual search/store neede
 
 ### Quick setup
 
-**Claude Code:**
+**One-command auto-detect installer (recommended):**
 ```bash
-./integrations/claude-code/install.sh
+./integrations/claude-code/install.sh --auto
 ```
 
-**Codex:**
+This detects and configures any available targets on your machine:
+- Claude Code hooks (`~/.claude/settings.json`)
+- Codex hooks (`~/.codex/settings.json`)
+- OpenClaw skill (`~/.openclaw/skills/faiss-memory/SKILL.md`)
+
+**Target only Claude or Codex:**
 ```bash
+./integrations/claude-code/install.sh --claude
 ./integrations/claude-code/install.sh --codex
 ```
 
-**OpenClaw:** Use the updated skill at `integrations/openclaw-skill.md`
+**Target only OpenClaw:**
+```bash
+./integrations/claude-code/install.sh --openclaw
+```
 
 **LLM-assisted setup:** Feed [`integrations/QUICKSTART-LLM.md`](integrations/QUICKSTART-LLM.md) to your AI assistant and it will configure everything automatically.
 
@@ -583,16 +609,75 @@ Makes memory retrieval and extraction automatic — no manual search/store neede
 
 Extraction is optional. Without it, hooks still retrieve memories — they just don't learn new ones automatically.
 
-### Building with extraction support
+### AUDN in plain English
 
-The Anthropic/OpenAI SDKs are not included in the default image. To enable extraction, rebuild with the `ENABLE_EXTRACT` flag:
+AUDN is the memory decision loop:
+
+- `ADD`: store a genuinely new fact
+- `UPDATE`: refine an existing memory that is close but outdated/incomplete
+- `DELETE`: remove a stale/conflicting memory
+- `NOOP`: ignore non-useful or duplicate facts
+
+Why it matters:
+- cleaner memory store over time (less duplicate/stale data)
+- better retrieval quality in later sessions
+- less "memory drift" when decisions change
+
+### Cost vs quality
+
+- **Anthropic/OpenAI extraction**: small usage cost (typically around ~$0.001/turn), full AUDN quality.
+- **Ollama extraction**: no API cost, but simplified decisions (`ADD/NOOP` only).
+- **Retrieval only** (`EXTRACT_PROVIDER` unset): no extraction model cost, but no new memories are learned automatically.
+
+### Cost control knobs
+
+Use these to keep extraction spend bounded:
+- `MAX_EXTRACT_MESSAGE_CHARS`: hard cap on transcript size per request
+- `EXTRACT_MAX_FACTS`: limits facts considered from each extraction
+- `EXTRACT_MAX_FACT_CHARS`: caps per-fact payload size
+- `EXTRACT_SIMILAR_TEXT_CHARS` and `EXTRACT_SIMILAR_PER_FACT`: limit context passed into AUDN
+
+### Async extraction API
+
+`POST /memory/extract` is async-first. It enqueues work and returns `202` with a `job_id`.
+Poll `GET /memory/extract/{job_id}` for `queued`, `running`, `completed`, or `failed`.
+If the queue is full, the API returns `429` with a `Retry-After` header.
+
+### Docker image targets (core / extract)
+
+The Dockerfile publishes two runtime targets:
+
+- `core` (default): search/add/list endpoints, no Anthropic/OpenAI SDKs
+- `extract`: includes Anthropic/OpenAI SDKs for `/memory/extract`
+
+Build both images directly:
 
 ```bash
-docker compose build --build-arg ENABLE_EXTRACT=true faiss-memory
-docker compose up -d faiss-memory
+docker build --target core -t faiss-memory:core .
+docker build --target extract -t faiss-memory:extract .
 ```
 
-Ollama uses HTTP directly and does not need the SDKs — it works with the default image.
+Use compose with either target:
+
+```bash
+# Default (core target)
+docker compose up -d --build faiss-memory
+
+# Extraction-ready target
+FAISS_IMAGE_TARGET=extract docker compose up -d --build faiss-memory
+```
+
+By default, images do **not** bake model weights. On first run, the service downloads them into
+`MODEL_CACHE_DIR` (`/data/model-cache` in Docker), so later restarts reuse the volume cache.
+
+If you want a fully preloaded image (faster first boot, larger pull), set `PRELOAD_MODEL=true`:
+
+```bash
+docker build --target core --build-arg PRELOAD_MODEL=true -t faiss-memory:core .
+docker build --target extract --build-arg PRELOAD_MODEL=true -t faiss-memory:extract .
+```
+
+Ollama uses HTTP directly and does not need the extra SDKs, so `core` is enough for Ollama extraction.
 
 ### Extraction environment variables
 
@@ -603,6 +688,9 @@ Ollama uses HTTP directly and does not need the SDKs — it works with the defau
 | `ANTHROPIC_API_KEY` | (none) | Required for Anthropic provider |
 | `OPENAI_API_KEY` | (none) | Required for OpenAI provider |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL (on Linux, use `http://localhost:11434`) |
+| `EXTRACT_QUEUE_MAX` | `EXTRACT_MAX_INFLIGHT * 20` | Maximum queued extraction jobs before backpressure (`429`) |
+| `EXTRACT_JOB_RETENTION_SEC` | `300` | How long completed/failed extraction jobs stay queryable |
+| `EXTRACT_JOBS_MAX` | `200` | Hard cap on stored extraction job records (finished jobs evicted first) |
 | `EXTRACT_MAX_FACTS` | `30` | Maximum facts kept from a single extraction |
 | `EXTRACT_MAX_FACT_CHARS` | `500` | Max length per extracted fact |
 | `EXTRACT_SIMILAR_TEXT_CHARS` | `280` | Max similar-memory text length passed into AUDN |
@@ -721,7 +809,7 @@ export GDRIVE_ACCOUNT="your-email@gmail.com"
 For S3/MinIO/R2 backends, build with cloud sync enabled:
 
 ```bash
-docker compose build --build-arg ENABLE_CLOUD_SYNC=true faiss-memory
+ENABLE_CLOUD_SYNC=true docker compose up -d --build faiss-memory
 ```
 
 See [CLOUD_SYNC_README.md](CLOUD_SYNC_README.md) for configuration details.
@@ -737,7 +825,7 @@ memories/
   onnx_embedder.py        # ONNX Runtime embedder (replaces PyTorch)
   llm_provider.py         # LLM provider abstraction (Anthropic/OpenAI/Ollama)
   llm_extract.py          # Extraction pipeline with AUDN
-  Dockerfile              # Multi-stage Docker build (model pre-downloaded)
+  Dockerfile              # Multi-stage Docker build (core/extract targets)
   requirements.txt        # Python dependencies
   requirements-extract.txt # Optional extraction deps (Anthropic/OpenAI SDKs)
   docker-compose.snippet.yml
@@ -752,9 +840,13 @@ memories/
     backup.sh             # Cron backup (local snapshots)
     backup-gdrive.sh      # Optional Google Drive upload
     install-cron.sh       # Cron job installer
+  webui/
+    index.html            # Memory browser entry page (/ui)
+    styles.css            # UI styling
+    app.js                # Browser-side pagination/filter logic
   integrations/
     claude-code/
-      install.sh          # Interactive installer for hooks
+      install.sh          # Auto-detect installer (Claude/Codex/OpenClaw)
       hooks/              # 5 hook scripts + hooks.json
     claude-code.md        # Claude Code guide
     openclaw-skill.md     # OpenClaw SKILL.md
@@ -764,6 +856,7 @@ memories/
     test_llm_provider.py  # LLM provider tests
     test_llm_extract.py   # Extraction pipeline tests
     test_extract_api.py   # API endpoint tests
+    test_web_ui.py        # Web UI route/static tests
   data/                   # .gitignored — persistent index + backups
 ```
 
@@ -773,10 +866,10 @@ memories/
 
 | Metric | Value |
 |--------|-------|
-| Docker image size | ~650MB (ONNX Runtime, multi-stage build) |
+| Docker image size | ~430MB core / ~436MB extract (no baked model cache by default) |
 | Search latency | <50ms |
 | Add latency | ~100ms (includes backup) |
-| Model loading | ~3s (pre-downloaded in image) |
+| Model loading | Cold boot downloads model once; warm boots reuse `/data/model-cache` |
 | Memory footprint | ~180-260MB baseline; higher during extraction bursts |
 | Index size | ~1.5KB per memory |
 

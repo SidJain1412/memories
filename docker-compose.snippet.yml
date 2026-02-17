@@ -2,8 +2,13 @@
 
 services:
   faiss-memory:
-    build: ../projects/memories
-    image: faiss-memory:latest
+    build:
+      context: ../projects/memories
+      target: ${FAISS_IMAGE_TARGET:-core}
+      args:
+        ENABLE_CLOUD_SYNC: ${ENABLE_CLOUD_SYNC:-false}
+        PRELOAD_MODEL: ${PRELOAD_MODEL:-false}
+    image: faiss-memory:${FAISS_IMAGE_TARGET:-core}
     container_name: faiss-memory
     restart: unless-stopped
     ports:
@@ -23,7 +28,7 @@ services:
       # - MEMORY_TRIM_ENABLED=true
       # - MEMORY_TRIM_COOLDOWN_SEC=15
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if 200 <= urllib.request.urlopen('http://localhost:8000/health', timeout=3).getcode() < 400 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
