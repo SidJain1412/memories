@@ -134,7 +134,7 @@ def run_audn(provider, engine, facts: list[str], source: str) -> list[dict]:
         # Ollama fallback: novelty check only
         decisions = []
         for i, fact in enumerate(facts):
-            is_new = engine.is_novel(fact, threshold=0.88)
+            is_new, _ = engine.is_novel(fact, threshold=0.88)
             if is_new:
                 decisions.append({"action": "ADD", "fact_index": i})
             else:
@@ -187,12 +187,12 @@ def execute_actions(engine, actions: list[dict], facts: list[str], source: str) 
 
         try:
             if act == "ADD":
-                ids = engine.add_memories(
+                added_ids = engine.add_memories(
                     texts=[fact_text],
-                    source=source,
+                    sources=[source],
                     deduplicate=True
                 )
-                new_id = ids.get("ids", [None])[0]
+                new_id = added_ids[0] if added_ids else None
                 result_actions.append({"action": "add", "text": fact_text, "id": new_id})
                 stored_count += 1
 
@@ -201,13 +201,13 @@ def execute_actions(engine, actions: list[dict], facts: list[str], source: str) 
                 new_text = action.get("new_text", fact_text)
                 if old_id is not None:
                     engine.delete_memory(old_id)
-                ids = engine.add_memories(
+                added_ids = engine.add_memories(
                     texts=[new_text],
-                    source=source,
+                    sources=[source],
+                    metadata_list=[{"supersedes": old_id}],
                     deduplicate=False,
-                    metadata={"supersedes": old_id}
                 )
-                new_id = ids.get("ids", [None])[0]
+                new_id = added_ids[0] if added_ids else None
                 result_actions.append({"action": "update", "old_id": old_id, "text": new_text, "new_id": new_id})
                 updated_count += 1
 

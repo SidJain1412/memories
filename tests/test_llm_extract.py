@@ -124,7 +124,7 @@ class TestAUDNCycle:
         mock_provider.supports_audn = False
 
         mock_engine = MagicMock()
-        mock_engine.is_novel.return_value = True
+        mock_engine.is_novel.return_value = (True, None)
 
         decisions = run_audn(
             mock_provider, mock_engine,
@@ -143,7 +143,7 @@ class TestAUDNCycle:
         mock_provider.supports_audn = False
 
         mock_engine = MagicMock()
-        mock_engine.is_novel.return_value = False
+        mock_engine.is_novel.return_value = (False, {"id": 5, "text": "Existing fact", "similarity": 0.95})
 
         decisions = run_audn(
             mock_provider, mock_engine,
@@ -160,7 +160,7 @@ class TestExecuteActions:
         from llm_extract import execute_actions
 
         mock_engine = MagicMock()
-        mock_engine.add_memories.return_value = {"ids": [100]}
+        mock_engine.add_memories.return_value = [100]
 
         actions = [{"action": "ADD", "fact_index": 0}]
         facts = ["New fact to store"]
@@ -168,12 +168,15 @@ class TestExecuteActions:
         result = execute_actions(mock_engine, actions, facts, source="test/proj")
         assert result["stored_count"] == 1
         mock_engine.add_memories.assert_called_once()
+        # Verify API contract: sources must be a list, return is List[int]
+        call_kwargs = mock_engine.add_memories.call_args
+        assert "sources" in call_kwargs.kwargs or (len(call_kwargs.args) >= 2 and isinstance(call_kwargs.args[1], list))
 
     def test_execute_update_calls_supersede(self):
         from llm_extract import execute_actions
 
         mock_engine = MagicMock()
-        mock_engine.add_memories.return_value = {"ids": [101]}
+        mock_engine.add_memories.return_value = [101]
 
         actions = [{"action": "UPDATE", "fact_index": 0, "old_id": 42, "new_text": "updated text"}]
         facts = ["original fact"]
@@ -226,7 +229,7 @@ class TestFullPipeline:
         mock_engine.hybrid_search.return_value = [
             {"id": 30, "text": "TypeScript strict mode", "similarity": 0.92}
         ]
-        mock_engine.add_memories.return_value = {"ids": [121]}
+        mock_engine.add_memories.return_value = [121]
 
         result = run_extraction(
             mock_provider, mock_engine,

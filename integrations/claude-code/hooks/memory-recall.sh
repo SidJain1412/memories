@@ -21,7 +21,7 @@ RESULTS=$(curl -sf -X POST "$FAISS_URL/search" \
   -H "X-API-Key: $FAISS_API_KEY" \
   -d "{\"query\": \"project $PROJECT conventions decisions patterns\", \"k\": 10, \"hybrid\": true}" \
   2>/dev/null \
-  | jq -r '[.results[] | select(.similarity > 0.3)] | .[0:8] | map("- \(.text)") | join("\n")' 2>/dev/null) || true
+  | jq -r '[.results[]] | .[0:8] | map("- \(.text)") | join("\n")' 2>/dev/null) || true
 
 if [ -z "$RESULTS" ] || [ "$RESULTS" = "null" ]; then
   exit 0
