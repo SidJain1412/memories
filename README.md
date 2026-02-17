@@ -487,6 +487,7 @@ POST /memory/deduplicate
 POST /index/build    {"sources": ["file1.md", "file2.md"]}
 GET  /stats
 GET  /health
+GET  /metrics
 ```
 
 ### Backups
@@ -541,6 +542,8 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 | `EXTRACT_MAX_INFLIGHT` | `2` | Max concurrent extraction jobs |
 | `MEMORY_TRIM_ENABLED` | `true` | Run post-extract GC/allocator trim |
 | `MEMORY_TRIM_COOLDOWN_SEC` | `15` | Minimum seconds between trim attempts |
+| `METRICS_LATENCY_SAMPLES` | `200` | Per-route latency sample window for `/metrics` percentiles |
+| `METRICS_TREND_SAMPLES` | `120` | Memory trend sample window exposed by `/metrics` |
 | `PORT` | `8000` | Internal service port |
 
 ### MCP Server Environment

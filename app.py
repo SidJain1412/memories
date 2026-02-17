@@ -5,9 +5,13 @@ CRUD operations, and structured logging.
 """
 
 import asyncio
+import math
 import os
 import re
 import logging
+import threading
+import time
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -89,6 +93,8 @@ EXTRACT_QUEUE_MAX = _env_int("EXTRACT_QUEUE_MAX", EXTRACT_MAX_INFLIGHT * 20, min
 EXTRACT_JOB_RETENTION_SEC = _env_int("EXTRACT_JOB_RETENTION_SEC", 3600, minimum=60)
 MEMORY_TRIM_ENABLED = _env_bool("MEMORY_TRIM_ENABLED", True)
 MEMORY_TRIM_COOLDOWN_SEC = _env_float("MEMORY_TRIM_COOLDOWN_SEC", 15.0)
+METRICS_LATENCY_SAMPLES = _env_int("METRICS_LATENCY_SAMPLES", 200, minimum=20)
+METRICS_TREND_SAMPLES = _env_int("METRICS_TREND_SAMPLES", 120, minimum=5)
 
 extract_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
 extract_jobs: Dict[str, Dict[str, Any]] = {}
@@ -97,6 +103,10 @@ memory_trimmer = MemoryTrimmer(
     enabled=MEMORY_TRIM_ENABLED,
     cooldown_sec=MEMORY_TRIM_COOLDOWN_SEC,
 )
+metrics_started_at = time.time()
+metrics_lock = threading.Lock()
+request_metrics: Dict[str, Dict[str, Any]] = {}
+memory_trend: deque[Dict[str, Any]] = deque(maxlen=METRICS_TREND_SAMPLES)
 
 
 # -- Auth ---------------------------------------------------------------------
@@ -119,6 +129,90 @@ memory: MemoryEngine = None  # type: ignore
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_metrics_path(path: str) -> str:
+    normalized = re.sub(r"/[0-9]+(?=/|$)", "/{id}", path)
+    normalized = re.sub(r"/[0-9a-f]{8,}(?=/|$)", "/{id}", normalized, flags=re.IGNORECASE)
+    return normalized
+
+
+def _record_request_metric(route_key: str, latency_ms: float, status_code: int) -> None:
+    with metrics_lock:
+        bucket = request_metrics.setdefault(
+            route_key,
+            {
+                "count": 0,
+                "error_count": 0,
+                "total_latency_ms": 0.0,
+                "max_latency_ms": 0.0,
+                "last_status_code": None,
+                "latency_samples_ms": deque(maxlen=METRICS_LATENCY_SAMPLES),
+            },
+        )
+        bucket["count"] += 1
+        if status_code >= 400:
+            bucket["error_count"] += 1
+        bucket["total_latency_ms"] += latency_ms
+        bucket["max_latency_ms"] = max(bucket["max_latency_ms"], latency_ms)
+        bucket["last_status_code"] = status_code
+        bucket["latency_samples_ms"].append(latency_ms)
+
+
+def _latency_percentile(samples: List[float], pct: float) -> float:
+    if not samples:
+        return 0.0
+    ordered = sorted(samples)
+    rank = max(0, math.ceil((pct / 100.0) * len(ordered)) - 1)
+    return ordered[rank]
+
+
+def _record_memory_sample(total_memories: int) -> None:
+    sample = {"timestamp": _utc_now_iso(), "total_memories": total_memories}
+    with metrics_lock:
+        memory_trend.append(sample)
+
+
+def _build_metrics_snapshot() -> Dict[str, Any]:
+    with metrics_lock:
+        routes_payload: Dict[str, Any] = {}
+        total_count = 0
+        total_errors = 0
+        for route_key, bucket in request_metrics.items():
+            samples = list(bucket["latency_samples_ms"])
+            count = int(bucket["count"])
+            errors = int(bucket["error_count"])
+            total_count += count
+            total_errors += errors
+            routes_payload[route_key] = {
+                "count": count,
+                "error_count": errors,
+                "error_rate_pct": round((errors / count) * 100.0, 2) if count else 0.0,
+                "avg_latency_ms": round(bucket["total_latency_ms"] / count, 2) if count else 0.0,
+                "p95_latency_ms": round(_latency_percentile(samples, 95.0), 2),
+                "max_latency_ms": round(bucket["max_latency_ms"], 2),
+                "last_status_code": bucket["last_status_code"],
+            }
+
+        trend_samples = list(memory_trend)
+
+    trend_delta = 0
+    if len(trend_samples) >= 2:
+        trend_delta = trend_samples[-1]["total_memories"] - trend_samples[0]["total_memories"]
+
+    return {
+        "requests": {
+            "total_count": total_count,
+            "error_count": total_errors,
+            "error_rate_pct": round((total_errors / total_count) * 100.0, 2) if total_count else 0.0,
+        },
+        "routes": routes_payload,
+        "memory_trend": {
+            "window_size": METRICS_TREND_SAMPLES,
+            "delta": trend_delta,
+            "samples": trend_samples,
+        },
+    }
 
 
 def _trim_finished_extract_jobs() -> None:
@@ -244,6 +338,20 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    start = time.perf_counter()
+    route_key = f"{request.method} {_normalize_metrics_path(request.url.path)}"
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        latency_ms = (time.perf_counter() - start) * 1000.0
+        _record_request_metric(route_key, latency_ms, status_code)
+
+
 # -- Request / Response models ------------------------------------------------
 
 class SearchRequest(BaseModel):
@@ -318,6 +426,32 @@ async def health():
 async def stats():
     """Full index statistics"""
     return memory.stats()
+
+
+@app.get("/metrics")
+async def metrics():
+    """Service-level metrics (latency, errors, queue depth, memory trend)."""
+    light = memory.stats_light()
+    current_total = int(light.get("total_memories", 0))
+    _record_memory_sample(current_total)
+
+    snapshot = _build_metrics_snapshot()
+    return {
+        "uptime_sec": int(time.time() - metrics_started_at),
+        "extract": {
+            "queue_depth": extract_queue.qsize(),
+            "queue_max": EXTRACT_QUEUE_MAX,
+            "queue_remaining": max(0, EXTRACT_QUEUE_MAX - extract_queue.qsize()),
+            "workers": EXTRACT_MAX_INFLIGHT,
+            "jobs_tracked": len(extract_jobs),
+        },
+        "memory": {
+            "current_total": current_total,
+            "trend": snapshot["memory_trend"],
+        },
+        "requests": snapshot["requests"],
+        "routes": snapshot["routes"],
+    }
 
 
 # -- Search -------------------------------------------------------------------
