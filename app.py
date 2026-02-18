@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+from embedder_reloader import EmbedderAutoReloadController
 from memory_engine import MemoryEngine
 from runtime_memory import MemoryTrimmer
 
@@ -99,6 +100,35 @@ EXTRACT_JOBS_MAX = _env_int("EXTRACT_JOBS_MAX", 200, minimum=10)
 MEMORY_TRIM_ENABLED = _env_bool("MEMORY_TRIM_ENABLED", True)
 MEMORY_TRIM_COOLDOWN_SEC = _env_float("MEMORY_TRIM_COOLDOWN_SEC", 15.0)
 MEMORY_TRIM_PERIODIC_SEC = _env_float("MEMORY_TRIM_PERIODIC_SEC", 5.0, minimum=0.0)
+EMBEDDER_AUTO_RELOAD_ENABLED = _env_bool("EMBEDDER_AUTO_RELOAD_ENABLED", False)
+EMBEDDER_AUTO_RELOAD_RSS_KB_THRESHOLD = _env_int(
+    "EMBEDDER_AUTO_RELOAD_RSS_KB_THRESHOLD",
+    1200000,
+    minimum=100000,
+)
+EMBEDDER_AUTO_RELOAD_CHECK_SEC = _env_float("EMBEDDER_AUTO_RELOAD_CHECK_SEC", 15.0, minimum=1.0)
+EMBEDDER_AUTO_RELOAD_HIGH_STREAK = _env_int("EMBEDDER_AUTO_RELOAD_HIGH_STREAK", 3)
+EMBEDDER_AUTO_RELOAD_MIN_INTERVAL_SEC = _env_float(
+    "EMBEDDER_AUTO_RELOAD_MIN_INTERVAL_SEC",
+    900.0,
+    minimum=30.0,
+)
+EMBEDDER_AUTO_RELOAD_WINDOW_SEC = _env_float(
+    "EMBEDDER_AUTO_RELOAD_WINDOW_SEC",
+    3600.0,
+    minimum=60.0,
+)
+EMBEDDER_AUTO_RELOAD_MAX_PER_WINDOW = _env_int("EMBEDDER_AUTO_RELOAD_MAX_PER_WINDOW", 2)
+EMBEDDER_AUTO_RELOAD_MAX_ACTIVE_REQUESTS = _env_int(
+    "EMBEDDER_AUTO_RELOAD_MAX_ACTIVE_REQUESTS",
+    2,
+    minimum=0,
+)
+EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH = _env_int(
+    "EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH",
+    0,
+    minimum=0,
+)
 METRICS_LATENCY_SAMPLES = _env_int("METRICS_LATENCY_SAMPLES", 200, minimum=20)
 METRICS_TREND_SAMPLES = _env_int("METRICS_TREND_SAMPLES", 120, minimum=5)
 
@@ -109,10 +139,62 @@ memory_trimmer = MemoryTrimmer(
     enabled=MEMORY_TRIM_ENABLED,
     cooldown_sec=MEMORY_TRIM_COOLDOWN_SEC,
 )
+embedder_auto_reloader = EmbedderAutoReloadController(
+    rss_threshold_kb=EMBEDDER_AUTO_RELOAD_RSS_KB_THRESHOLD,
+    required_high_streak=EMBEDDER_AUTO_RELOAD_HIGH_STREAK,
+    min_interval_sec=EMBEDDER_AUTO_RELOAD_MIN_INTERVAL_SEC,
+    window_sec=EMBEDDER_AUTO_RELOAD_WINDOW_SEC,
+    max_per_window=EMBEDDER_AUTO_RELOAD_MAX_PER_WINDOW,
+    max_active_requests=EMBEDDER_AUTO_RELOAD_MAX_ACTIVE_REQUESTS,
+    max_queue_depth=EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH,
+)
 metrics_started_at = time.time()
 metrics_lock = threading.Lock()
 request_metrics: Dict[str, Dict[str, Any]] = {}
 memory_trend: deque[Dict[str, Any]] = deque(maxlen=METRICS_TREND_SAMPLES)
+active_http_requests = 0
+embedder_reload_metrics: Dict[str, Any] = {
+    "enabled": EMBEDDER_AUTO_RELOAD_ENABLED,
+    "policy": {
+        "rss_kb_threshold": EMBEDDER_AUTO_RELOAD_RSS_KB_THRESHOLD,
+        "check_sec": EMBEDDER_AUTO_RELOAD_CHECK_SEC,
+        "required_high_streak": EMBEDDER_AUTO_RELOAD_HIGH_STREAK,
+        "min_interval_sec": EMBEDDER_AUTO_RELOAD_MIN_INTERVAL_SEC,
+        "window_sec": EMBEDDER_AUTO_RELOAD_WINDOW_SEC,
+        "max_per_window": EMBEDDER_AUTO_RELOAD_MAX_PER_WINDOW,
+        "max_active_requests": EMBEDDER_AUTO_RELOAD_MAX_ACTIVE_REQUESTS,
+        "max_queue_depth": EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH,
+    },
+    "auto": {
+        "checks_total": 0,
+        "skipped_total": 0,
+        "triggered_total": 0,
+        "succeeded_total": 0,
+        "failed_total": 0,
+        "decision_reasons": {},
+        "last_decision_reason": None,
+        "last_rss_kb": 0,
+        "last_triggered_at": None,
+        "last_completed_at": None,
+        "last_reload_duration_ms": 0.0,
+        "last_gc_collected": None,
+        "last_trim_reason": None,
+        "last_error": None,
+        "last_error_at": None,
+    },
+    "manual": {
+        "requests_total": 0,
+        "succeeded_total": 0,
+        "failed_total": 0,
+        "last_requested_at": None,
+        "last_completed_at": None,
+        "last_reload_duration_ms": 0.0,
+        "last_gc_collected": None,
+        "last_trim_reason": None,
+        "last_error": None,
+        "last_error_at": None,
+    },
+}
 
 
 # -- Auth ---------------------------------------------------------------------
@@ -216,6 +298,7 @@ def _read_process_memory_kb() -> Dict[str, int]:
 
 
 def _build_metrics_snapshot() -> Dict[str, Any]:
+    global active_http_requests
     with metrics_lock:
         routes_payload: Dict[str, Any] = {}
         total_count = 0
@@ -237,6 +320,16 @@ def _build_metrics_snapshot() -> Dict[str, Any]:
             }
 
         trend_samples = list(memory_trend)
+        active_requests_now = active_http_requests
+        reload_metrics_payload = {
+            "enabled": embedder_reload_metrics["enabled"],
+            "policy": dict(embedder_reload_metrics["policy"]),
+            "auto": {
+                **embedder_reload_metrics["auto"],
+                "decision_reasons": dict(embedder_reload_metrics["auto"]["decision_reasons"]),
+            },
+            "manual": dict(embedder_reload_metrics["manual"]),
+        }
 
     trend_delta = 0
     if len(trend_samples) >= 2:
@@ -247,6 +340,7 @@ def _build_metrics_snapshot() -> Dict[str, Any]:
             "total_count": total_count,
             "error_count": total_errors,
             "error_rate_pct": round((total_errors / total_count) * 100.0, 2) if total_count else 0.0,
+            "active_http_requests": active_requests_now,
         },
         "routes": routes_payload,
         "memory_trend": {
@@ -254,6 +348,7 @@ def _build_metrics_snapshot() -> Dict[str, Any]:
             "delta": trend_delta,
             "samples": trend_samples,
         },
+        "embedder_reload": reload_metrics_payload,
     }
 
 
@@ -381,6 +476,79 @@ async def _periodic_memory_trim() -> None:
             logger.debug("Periodic memory trim error", exc_info=True)
 
 
+async def _periodic_embedder_reload() -> None:
+    """Auto-reload embedder when RSS stays high and service is relatively idle."""
+    while True:
+        try:
+            await asyncio.sleep(EMBEDDER_AUTO_RELOAD_CHECK_SEC)
+            process_stats = _read_process_memory_kb()
+            rss_kb = int(process_stats.get("rss_kb", 0))
+            with metrics_lock:
+                active_now = active_http_requests
+            decision = embedder_auto_reloader.evaluate(
+                rss_kb=rss_kb,
+                active_requests=active_now,
+                queue_depth=extract_queue.qsize(),
+            )
+            reason = str(decision.get("reason", "unknown"))
+            with metrics_lock:
+                auto_metrics = embedder_reload_metrics["auto"]
+                auto_metrics["checks_total"] += 1
+                auto_metrics["last_decision_reason"] = reason
+                auto_metrics["last_rss_kb"] = rss_kb
+                reason_counts = auto_metrics["decision_reasons"]
+                reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
+            if not decision.get("trigger"):
+                with metrics_lock:
+                    embedder_reload_metrics["auto"]["skipped_total"] += 1
+                continue
+
+            logger.warning(
+                "Auto embedder reload triggered: rss_kb=%s active=%s queue=%s",
+                rss_kb,
+                active_now,
+                extract_queue.qsize(),
+            )
+            started_at = _utc_now_iso()
+            started_monotonic = time.perf_counter()
+            with metrics_lock:
+                embedder_reload_metrics["auto"]["triggered_total"] += 1
+                embedder_reload_metrics["auto"]["last_triggered_at"] = started_at
+            try:
+                result = await run_in_threadpool(memory.reload_embedder)
+                trim_result = memory_trimmer.maybe_trim(reason="auto_embedder_reload")
+                elapsed_ms = round((time.perf_counter() - started_monotonic) * 1000.0, 2)
+                with metrics_lock:
+                    auto_metrics = embedder_reload_metrics["auto"]
+                    auto_metrics["succeeded_total"] += 1
+                    auto_metrics["last_completed_at"] = _utc_now_iso()
+                    auto_metrics["last_reload_duration_ms"] = elapsed_ms
+                    auto_metrics["last_gc_collected"] = result.get("gc_collected")
+                    auto_metrics["last_trim_reason"] = trim_result.get("reason")
+                    auto_metrics["last_error"] = None
+                    auto_metrics["last_error_at"] = None
+                logger.info(
+                    "Auto embedder reload complete: gc_collected=%s trim_reason=%s duration_ms=%s",
+                    result.get("gc_collected"),
+                    trim_result.get("reason"),
+                    elapsed_ms,
+                )
+            except Exception as exc:
+                elapsed_ms = round((time.perf_counter() - started_monotonic) * 1000.0, 2)
+                with metrics_lock:
+                    auto_metrics = embedder_reload_metrics["auto"]
+                    auto_metrics["failed_total"] += 1
+                    auto_metrics["last_completed_at"] = _utc_now_iso()
+                    auto_metrics["last_reload_duration_ms"] = elapsed_ms
+                    auto_metrics["last_error"] = str(exc)
+                    auto_metrics["last_error_at"] = _utc_now_iso()
+                logger.exception("Auto embedder reload failed")
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.debug("Periodic auto reload error", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global memory
@@ -399,6 +567,10 @@ async def lifespan(app: FastAPI):
     if MEMORY_TRIM_ENABLED and MEMORY_TRIM_PERIODIC_SEC > 0:
         background_tasks.append(
             asyncio.create_task(_periodic_memory_trim(), name="memory-trim")
+        )
+    if EMBEDDER_AUTO_RELOAD_ENABLED:
+        background_tasks.append(
+            asyncio.create_task(_periodic_embedder_reload(), name="embedder-auto-reload")
         )
     yield
     for task in background_tasks:
@@ -435,14 +607,19 @@ app.add_middleware(
 
 @app.middleware("http")
 async def metrics_middleware(request: Request, call_next):
+    global active_http_requests
     start = time.perf_counter()
     route_key = f"{request.method} {_normalize_metrics_path(request.url.path)}"
     status_code = 500
+    with metrics_lock:
+        active_http_requests += 1
     try:
         response = await call_next(request)
         status_code = response.status_code
         return response
     finally:
+        with metrics_lock:
+            active_http_requests = max(0, active_http_requests - 1)
         latency_ms = (time.perf_counter() - start) * 1000.0
         _record_request_metric(route_key, latency_ms, status_code)
 
@@ -601,9 +778,46 @@ async def metrics():
             "trend": snapshot["memory_trend"],
             "process": _read_process_memory_kb(),
         },
+        "embedder_reload": snapshot["embedder_reload"],
         "requests": snapshot["requests"],
         "routes": snapshot["routes"],
     }
+
+
+@app.post("/maintenance/embedder/reload")
+async def reload_embedder():
+    """Reload in-process embedder runtime and release old inference objects."""
+    started_at = _utc_now_iso()
+    started_monotonic = time.perf_counter()
+    with metrics_lock:
+        manual_metrics = embedder_reload_metrics["manual"]
+        manual_metrics["requests_total"] += 1
+        manual_metrics["last_requested_at"] = started_at
+    try:
+        result = await run_in_threadpool(memory.reload_embedder)
+        trim_result = memory_trimmer.maybe_trim(reason="embedder_reload")
+        elapsed_ms = round((time.perf_counter() - started_monotonic) * 1000.0, 2)
+        with metrics_lock:
+            manual_metrics = embedder_reload_metrics["manual"]
+            manual_metrics["succeeded_total"] += 1
+            manual_metrics["last_completed_at"] = _utc_now_iso()
+            manual_metrics["last_reload_duration_ms"] = elapsed_ms
+            manual_metrics["last_gc_collected"] = result.get("gc_collected")
+            manual_metrics["last_trim_reason"] = trim_result.get("reason")
+            manual_metrics["last_error"] = None
+            manual_metrics["last_error_at"] = None
+        return {"success": True, **result, "trim": trim_result}
+    except Exception as e:
+        elapsed_ms = round((time.perf_counter() - started_monotonic) * 1000.0, 2)
+        with metrics_lock:
+            manual_metrics = embedder_reload_metrics["manual"]
+            manual_metrics["failed_total"] += 1
+            manual_metrics["last_completed_at"] = _utc_now_iso()
+            manual_metrics["last_reload_duration_ms"] = elapsed_ms
+            manual_metrics["last_error"] = str(e)
+            manual_metrics["last_error_at"] = _utc_now_iso()
+        logger.exception("Embedder reload failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # -- Search -------------------------------------------------------------------

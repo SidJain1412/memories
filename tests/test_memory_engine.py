@@ -310,6 +310,40 @@ class TestModelCache:
         assert (model_cache / "models--seed" / "blob.bin").read_text(encoding="utf-8") == "seeded"
 
 
+class TestEmbedderReload:
+    def test_reload_embedder_swaps_instance_and_closes_old(self, tmp_path, monkeypatch):
+        import memory_engine as memory_engine_module
+
+        created = []
+
+        class DummyEmbedder:
+            def __init__(self, model_name="all-MiniLM-L6-v2", cache_dir=None):
+                self.model_name = model_name
+                self.cache_dir = cache_dir
+                self.closed = False
+                created.append(self)
+
+            def get_sentence_embedding_dimension(self):
+                return 384
+
+            def close(self):
+                self.closed = True
+
+        monkeypatch.setattr(memory_engine_module, "OnnxEmbedder", DummyEmbedder)
+
+        engine = memory_engine_module.MemoryEngine(data_dir=str(tmp_path / "data"))
+        old_embedder = engine.model
+
+        result = engine.reload_embedder()
+
+        assert result["reloaded"] is True
+        assert result["model"] == "all-MiniLM-L6-v2"
+        assert result["dimension"] == 384
+        assert old_embedder.closed is True
+        assert engine.model is not old_embedder
+        assert len(created) == 2
+
+
 class TestRebuildFromFiles:
     def test_rebuild(self, engine, tmp_path):
         md_file = tmp_path / "test_source.md"

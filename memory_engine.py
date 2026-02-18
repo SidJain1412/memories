@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import threading
+import gc
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -59,6 +60,7 @@ class MemoryEngine:
         self._max_backups = max_backups or int(os.getenv("MAX_BACKUPS", "10"))
         self._model_cache_dir = os.getenv("MODEL_CACHE_DIR", "").strip()
         self._preloaded_model_cache_dir = os.getenv("PRELOADED_MODEL_CACHE_DIR", "").strip()
+        self._embedder_cache_dir: Optional[str] = None
 
         requested_backend = os.getenv("STORAGE_BACKEND", "qdrant").strip().lower() or "qdrant"
         if requested_backend != "qdrant":
@@ -95,6 +97,8 @@ class MemoryEngine:
 
             embedder_cache_dir = str(cache_path)
 
+        self._embedder_cache_dir = embedder_cache_dir
+        self._embedder_lock = threading.RLock()
         self.model = OnnxEmbedder(self._model_name, cache_dir=embedder_cache_dir)
         self.dim = self.model.get_sentence_embedding_dimension()
 
@@ -181,13 +185,26 @@ class MemoryEngine:
     def _point_payload(self, meta: Dict[str, Any]) -> Dict[str, Any]:
         return {k: v for k, v in meta.items() if k != "id"}
 
+    def _encode(
+        self,
+        texts: List[str],
+        normalize_embeddings: bool = True,
+        show_progress_bar: bool = False,
+    ) -> np.ndarray:
+        with self._embedder_lock:
+            return self.model.encode(
+                texts,
+                normalize_embeddings=normalize_embeddings,
+                show_progress_bar=show_progress_bar,
+            )
+
     def _reindex_store_from_metadata(self):
         self.qdrant_store.recreate_collection(self.dim)
         if not self.metadata:
             return
 
         texts = [m["text"] for m in self.metadata]
-        embeddings = self.model.encode(
+        embeddings = self._encode(
             texts,
             normalize_embeddings=True,
             show_progress_bar=False,
@@ -399,7 +416,7 @@ class MemoryEngine:
             if not texts:
                 return []
 
-            embeddings = self.model.encode(
+            embeddings = self._encode(
                 texts,
                 normalize_embeddings=True,
                 show_progress_bar=False,
@@ -619,7 +636,7 @@ class MemoryEngine:
 
                 meta["timestamp"] = datetime.now(timezone.utc).isoformat()
 
-                embedding = self.model.encode(
+                embedding = self._encode(
                     [meta["text"]],
                     normalize_embeddings=True,
                     show_progress_bar=False,
@@ -722,7 +739,7 @@ class MemoryEngine:
 
         k = min(k, len(self.metadata), 100)
 
-        query_vec = self.model.encode(
+        query_vec = self._encode(
             [query],
             normalize_embeddings=True,
             show_progress_bar=False,
@@ -836,7 +853,7 @@ class MemoryEngine:
         if len(self.metadata) < 2:
             return []
 
-        all_embeddings = self.model.encode(
+        all_embeddings = self._encode(
             [m["text"] for m in self.metadata],
             normalize_embeddings=True,
             show_progress_bar=False,
@@ -994,7 +1011,7 @@ class MemoryEngine:
                         logger.error("Error reading %s: %s", file_path, e)
 
                 if texts:
-                    embeddings = self.model.encode(
+                    embeddings = self._encode(
                         texts,
                         normalize_embeddings=True,
                         show_progress_bar=False,
@@ -1086,6 +1103,43 @@ class MemoryEngine:
     def create_backup(self, prefix: str = "manual") -> Path:
         """Create a manual backup with optional prefix."""
         return self._backup(prefix=prefix)
+
+    def reload_embedder(self) -> Dict[str, Any]:
+        """Recreate embedder runtime and release old inference objects."""
+        with self._entity_locks.acquire_many(["__all__"]):
+            with self._write_lock:
+                with self._embedder_lock:
+                    old_model = self.model
+                    new_model = OnnxEmbedder(self._model_name, cache_dir=self._embedder_cache_dir)
+                    new_dim = new_model.get_sentence_embedding_dimension()
+                    if new_dim != self.dim:
+                        close_fn = getattr(new_model, "close", None)
+                        if callable(close_fn):
+                            close_fn()
+                        raise RuntimeError(
+                            f"Embedder dimension mismatch: current={self.dim} new={new_dim}"
+                        )
+
+                    self.model = new_model
+                    self.dim = new_dim
+                    self.config["dimension"] = new_dim
+                    self.config["last_updated"] = datetime.now(timezone.utc).isoformat()
+                    self.save()
+
+        close_fn = getattr(old_model, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception as exc:
+                logger.warning("Failed to close old embedder runtime: %s", exc)
+
+        gc_collected = gc.collect()
+        return {
+            "reloaded": True,
+            "model": self.config.get("model"),
+            "dimension": self.dim,
+            "gc_collected": gc_collected,
+        }
 
     def get_cloud_sync(self) -> Optional["CloudSync"]:
         """Get cloud sync client (None if not available/enabled)."""

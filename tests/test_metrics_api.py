@@ -18,6 +18,12 @@ def client():
         mock_engine = MagicMock()
         mock_engine.stats_light.return_value = {"total_memories": 5}
         mock_engine.stats.return_value = {"total_memories": 5}
+        mock_engine.reload_embedder.return_value = {
+            "reloaded": True,
+            "model": "all-MiniLM-L6-v2",
+            "dimension": 384,
+            "gc_collected": 4,
+        }
         app_module.memory = mock_engine
 
         yield TestClient(app_module.app), mock_engine
@@ -60,11 +66,18 @@ def test_metrics_includes_latency_error_queue_and_memory_sections(client):
 
     assert data["requests"]["total_count"] >= 2
     assert data["requests"]["error_count"] >= 1
+    assert data["requests"]["active_http_requests"] >= 1
 
     search_route = data["routes"].get("POST /search")
     assert search_route is not None
     assert search_route["error_count"] >= 1
     assert search_route["p95_latency_ms"] >= 0
+
+    reload_metrics = data["embedder_reload"]
+    assert reload_metrics["enabled"] is False
+    assert reload_metrics["policy"]["rss_kb_threshold"] >= 100000
+    assert reload_metrics["auto"]["checks_total"] >= 0
+    assert reload_metrics["manual"]["requests_total"] >= 0
 
 
 def test_metrics_memory_trend_tracks_deltas(client):
@@ -86,3 +99,23 @@ def test_metrics_memory_trend_tracks_deltas(client):
     assert second_data["memory"]["current_total"] == 7
     assert trend["delta"] == 2
     assert len(trend["samples"]) >= 2
+
+
+def test_metrics_tracks_manual_embedder_reload(client):
+    test_client, _ = client
+
+    reload_response = test_client.post(
+        "/maintenance/embedder/reload",
+        headers={"X-API-Key": "test-key"},
+    )
+    assert reload_response.status_code == 200
+
+    metrics_response = test_client.get("/metrics", headers={"X-API-Key": "test-key"})
+    assert metrics_response.status_code == 200
+    data = metrics_response.json()
+    manual = data["embedder_reload"]["manual"]
+    assert manual["requests_total"] >= 1
+    assert manual["succeeded_total"] >= 1
+    assert manual["failed_total"] == 0
+    assert manual["last_requested_at"] is not None
+    assert manual["last_completed_at"] is not None
