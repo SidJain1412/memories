@@ -147,15 +147,6 @@ if ! command -v curl >/dev/null 2>&1; then
   exit 1
 fi
 
-# Detect shell profile
-if [ -f "$HOME/.zshrc" ]; then
-  SHELL_PROFILE="$HOME/.zshrc"
-elif [ -f "$HOME/.bashrc" ]; then
-  SHELL_PROFILE="$HOME/.bashrc"
-else
-  SHELL_PROFILE="$HOME/.profile"
-fi
-
 echo ""
 echo -e "${BLUE}Memories — Automatic Memory Layer Setup${NC}"
 echo -e "${BLUE}============================================${NC}"
@@ -360,37 +351,61 @@ if [ "$TARGET_OPENCLAW" = true ]; then
 fi
 
 echo ""
-echo -e "[4/4] Updating shell environment in $SHELL_PROFILE..."
+echo -e "[4/4] Writing configuration files..."
 
-add_env_if_missing() {
+# ~/.config/memories/env — loaded by hook scripts at runtime
+MEMORIES_ENV_DIR="$HOME/.config/memories"
+MEMORIES_ENV_FILE="$MEMORIES_ENV_DIR/env"
+mkdir -p "$MEMORIES_ENV_DIR"
+
+write_env_var() {
   local var_name="$1"
   local var_value="$2"
-  if ! grep -q "export $var_name=" "$SHELL_PROFILE" 2>/dev/null; then
-    echo "export $var_name=\"$var_value\"" >> "$SHELL_PROFILE"
-    echo -e "  ${GREEN}[ADD]${NC} $var_name"
+  if grep -q "^$var_name=" "$MEMORIES_ENV_FILE" 2>/dev/null; then
+    echo -e "  ${YELLOW}[SKIP]${NC} $var_name already in $MEMORIES_ENV_FILE"
   else
-    echo -e "  ${YELLOW}[SKIP]${NC} $var_name already set"
+    echo "$var_name=\"$var_value\"" >> "$MEMORIES_ENV_FILE"
+    echo -e "  ${GREEN}[ADD]${NC} $var_name → $MEMORIES_ENV_FILE"
   fi
 }
 
-add_env_if_missing "MEMORIES_URL" "$MEMORIES_URL"
+write_env_var "MEMORIES_URL" "$MEMORIES_URL"
 
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 if [ -n "$MEMORIES_API_KEY" ]; then
-  add_env_if_missing "MEMORIES_API_KEY" "$MEMORIES_API_KEY"
+  write_env_var "MEMORIES_API_KEY" "$MEMORIES_API_KEY"
 fi
 
+# Repo .env — read by docker-compose for extraction provider config
 if [ -n "$EXTRACT_PROVIDER" ]; then
-  add_env_if_missing "EXTRACT_PROVIDER" "$EXTRACT_PROVIDER"
+  REPO_ENV_FILE="$REPO_ROOT/.env"
+
+  write_docker_env_var() {
+    local var_name="$1"
+    local var_value="$2"
+    if grep -q "^$var_name=" "$REPO_ENV_FILE" 2>/dev/null; then
+      echo -e "  ${YELLOW}[SKIP]${NC} $var_name already in $REPO_ENV_FILE"
+    else
+      echo "$var_name=$var_value" >> "$REPO_ENV_FILE"
+      echo -e "  ${GREEN}[ADD]${NC} $var_name → $REPO_ENV_FILE"
+    fi
+  }
+
+  write_docker_env_var "EXTRACT_PROVIDER" "$EXTRACT_PROVIDER"
   if [ -n "$EXTRACT_KEY_VAR" ] && [ -n "$EXTRACT_KEY_VAL" ]; then
-    add_env_if_missing "$EXTRACT_KEY_VAR" "$EXTRACT_KEY_VAL"
+    write_docker_env_var "$EXTRACT_KEY_VAR" "$EXTRACT_KEY_VAL"
   fi
   if [ "$EXTRACT_PROVIDER" = "ollama" ]; then
-    add_env_if_missing "OLLAMA_URL" "$OLLAMA_URL"
+    write_docker_env_var "OLLAMA_URL" "$OLLAMA_URL"
   fi
+
+  echo ""
+  echo -e "  ${YELLOW}[NOTE]${NC} Restart docker-compose from the repo directory to apply extraction settings:"
+  echo -e "  cd $REPO_ROOT && docker-compose up -d"
 fi
 
 echo ""
 echo -e "${GREEN}Done.${NC}"
 echo -e "Installed targets: ${BLUE}$TARGETS_CSV${NC}"
-echo "Run: source $SHELL_PROFILE"
+echo -e "Hook env file:     ${BLUE}$MEMORIES_ENV_FILE${NC}"
+[ -n "$EXTRACT_PROVIDER" ] && echo -e "Docker env file:   ${BLUE}$REPO_ROOT/.env${NC}"
