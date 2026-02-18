@@ -31,6 +31,11 @@ def client():
         mock_engine.delete_by_prefix.return_value = {"deleted_count": 4}
         mock_engine.update_memory.return_value = {"id": 4, "updated_fields": ["text"]}
         mock_engine.is_ready.return_value = {"ready": True, "status": "ready"}
+        mock_engine.reload_embedder.return_value = {
+            "reloaded": True,
+            "model": "all-MiniLM-L6-v2",
+            "dimension": 384,
+        }
         app_module.memory = mock_engine
         yield TestClient(app_module.app), mock_engine
 
@@ -180,3 +185,16 @@ def test_health_ready(client):
     body = response.json()
     assert body["status"] == "ready"
     mock_engine.is_ready.assert_called_once()
+
+
+def test_reload_embedder_endpoint(client):
+    test_client, mock_engine = client
+    response = test_client.post(
+        "/maintenance/embedder/reload",
+        headers={"X-API-Key": "test-key"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["reloaded"] is True
+    mock_engine.reload_embedder.assert_called_once_with()

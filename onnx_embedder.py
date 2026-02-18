@@ -8,6 +8,7 @@ Same model (all-MiniLM-L6-v2), same output, ~4x smaller Docker image.
 import logging
 import numpy as np
 import onnxruntime as ort
+import threading
 from typing import List, Union
 from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer
@@ -60,6 +61,8 @@ class OnnxEmbedder:
         self._input_names = [inp.name for inp in self.session.get_inputs()]
 
         # Get output dimension from a test encode
+        self._lock = threading.RLock()
+        self._closed = False
         self._dim = self._get_dim()
         logger.info(
             "ONNX embedder loaded: model=%s, dim=%d", self._model_name, self._dim
@@ -97,44 +100,62 @@ class OnnxEmbedder:
         if isinstance(sentences, str):
             sentences = [sentences]
 
-        all_embeddings = []
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Embedder is closed")
 
-        for i in range(0, len(sentences), batch_size):
-            batch = sentences[i : i + batch_size]
+            all_embeddings = []
 
-            # Tokenize
-            encoded = self.tokenizer.encode_batch(batch)
+            for i in range(0, len(sentences), batch_size):
+                batch = sentences[i : i + batch_size]
 
-            input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
-            attention_mask = np.array(
-                [e.attention_mask for e in encoded], dtype=np.int64
-            )
+                # Tokenize
+                encoded = self.tokenizer.encode_batch(batch)
 
-            # Build feed dict based on what the model expects
-            feed = {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-            }
-            if "token_type_ids" in self._input_names:
-                feed["token_type_ids"] = np.zeros_like(input_ids, dtype=np.int64)
+                input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
+                attention_mask = np.array(
+                    [e.attention_mask for e in encoded], dtype=np.int64
+                )
 
-            # Run ONNX inference
-            outputs = self.session.run(None, feed)
+                # Build feed dict based on what the model expects
+                feed = {
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                }
+                if "token_type_ids" in self._input_names:
+                    feed["token_type_ids"] = np.zeros_like(input_ids, dtype=np.int64)
 
-            # Mean pooling over token embeddings (same as sentence-transformers)
-            token_embeddings = outputs[0]  # (batch, seq_len, hidden_dim)
-            mask_expanded = attention_mask[:, :, np.newaxis].astype(np.float32)
-            sum_embeddings = np.sum(token_embeddings * mask_expanded, axis=1)
-            sum_mask = np.clip(mask_expanded.sum(axis=1), a_min=1e-9, a_max=None)
-            embeddings = sum_embeddings / sum_mask
+                # Run ONNX inference
+                outputs = self.session.run(None, feed)
 
-            all_embeddings.append(embeddings)
+                # Mean pooling over token embeddings (same as sentence-transformers)
+                token_embeddings = outputs[0]  # (batch, seq_len, hidden_dim)
+                mask_expanded = attention_mask[:, :, np.newaxis].astype(np.float32)
+                sum_embeddings = np.sum(token_embeddings * mask_expanded, axis=1)
+                sum_mask = np.clip(mask_expanded.sum(axis=1), a_min=1e-9, a_max=None)
+                embeddings = sum_embeddings / sum_mask
 
-        result = np.vstack(all_embeddings).astype(np.float32)
+                all_embeddings.append(embeddings)
 
-        if normalize_embeddings:
-            norms = np.linalg.norm(result, axis=1, keepdims=True)
-            norms = np.clip(norms, a_min=1e-9, a_max=None)
-            result = result / norms
+            result = np.vstack(all_embeddings).astype(np.float32)
 
-        return result
+            if normalize_embeddings:
+                norms = np.linalg.norm(result, axis=1, keepdims=True)
+                norms = np.clip(norms, a_min=1e-9, a_max=None)
+                result = result / norms
+
+            return result
+
+    def close(self) -> None:
+        """Release references to runtime objects for faster reclaim."""
+        with self._lock:
+            if self._closed:
+                return
+            session = getattr(self, "session", None)
+            tokenizer = getattr(self, "tokenizer", None)
+            self.session = None
+            self.tokenizer = None
+            self._input_names = []
+            self._closed = True
+        del session
+        del tokenizer
