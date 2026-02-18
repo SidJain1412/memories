@@ -53,6 +53,9 @@ docker compose up -d --build memories
 ```
 
 This auto-detects and configures Claude Code, Cursor, Codex, and OpenClaw where available.
+It also writes:
+- hook runtime vars to `~/.config/memories/env` (`MEMORIES_URL`, optional `MEMORIES_API_KEY`)
+- extraction provider vars to repo `.env` (`EXTRACT_PROVIDER`, provider keys/URL)
 
 For guided LLM setup, use:
 - [`integrations/QUICKSTART-LLM.md`](integrations/QUICKSTART-LLM.md)

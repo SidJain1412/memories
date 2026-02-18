@@ -39,7 +39,7 @@ The service runs at **http://localhost:8900**. API docs at http://localhost:8900
 ## Architecture
 
 ```
-AI Client (Claude, Codex, ChatGPT, OpenClaw)
+AI Client (Claude, Cursor, Codex, ChatGPT, OpenClaw)
     |
     |-- MCP protocol (Claude Code / Desktop)
     |-- REST API (everything else)
@@ -429,7 +429,7 @@ ingress:
 }
 ```
 
-Now every client — Claude Code on your laptop, Claude Desktop on your phone, ChatGPT, OpenClaw — all hit the same memory store running on your Mac mini.
+Now every client — Claude Code on your laptop, Cursor, Claude Desktop on your phone, ChatGPT, OpenClaw — all hit the same memory store running on your Mac mini.
 
 ---
 
@@ -629,12 +629,18 @@ Makes memory retrieval and extraction automatic — no manual search/store neede
 
 This detects and configures any available targets on your machine:
 - Claude Code hooks (`~/.claude/settings.json`)
+- Cursor hooks (via Claude settings + third-party skills)
 - Codex hooks (`~/.codex/settings.json`)
 - OpenClaw skill (`~/.openclaw/skills/memories/SKILL.md`)
 
-**Target only Claude or Codex:**
+The installer writes runtime config to:
+- `~/.config/memories/env` for hook vars (`MEMORIES_URL`, optional `MEMORIES_API_KEY`)
+- repo `.env` for extraction vars (`EXTRACT_PROVIDER`, provider keys/URL)
+
+**Target only Claude, Cursor, or Codex:**
 ```bash
 ./integrations/claude-code/install.sh --claude
+./integrations/claude-code/install.sh --cursor
 ./integrations/claude-code/install.sh --codex
 ```
 
@@ -760,6 +766,8 @@ Reference benchmark: `docs/benchmarks/2026-02-17-memory-reclamation.md`
 ```bash
 ./integrations/claude-code/install.sh --uninstall
 ```
+
+Then optionally remove `MEMORIES_*` from `~/.config/memories/env` and `EXTRACT_*` from repo `.env`.
 
 ---
 
@@ -893,7 +901,7 @@ memories/
     app.js                # Browser-side pagination/filter logic
   integrations/
     claude-code/
-      install.sh          # Auto-detect installer (Claude/Codex/OpenClaw)
+      install.sh          # Auto-detect installer (Claude/Cursor/Codex/OpenClaw)
       hooks/              # 5 hook scripts + hooks.json
     claude-code.md        # Claude Code guide
     openclaw-skill.md     # OpenClaw SKILL.md
