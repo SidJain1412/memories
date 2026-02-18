@@ -6,6 +6,7 @@ No local model download or ONNX runtime required.
 """
 
 import logging
+import threading
 import numpy as np
 from typing import List, Union
 
@@ -18,10 +19,17 @@ _KNOWN_DIMENSIONS = {
     "text-embedding-ada-002": 1536,
 }
 
+# OpenAI SDK retries transient errors (429, 5xx) automatically.
+# We add one defensive retry layer for network-level failures.
+_MAX_RETRIES = 2
+
 
 class OpenAIEmbedder:
     """
     Drop-in replacement for OnnxEmbedder using the OpenAI embeddings API.
+
+    Thread safety is provided by the caller (MemoryEngine._embedder_lock),
+    but we include a _closed flag for parity with OnnxEmbedder.
 
     Supports the same interface:
         model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
@@ -33,6 +41,8 @@ class OpenAIEmbedder:
 
         self._model = model
         self._client = OpenAI(api_key=api_key)
+        self._closed = False
+        self._lock = threading.RLock()
 
         self._dim = _KNOWN_DIMENSIONS.get(model)
         if self._dim is None:
@@ -42,9 +52,23 @@ class OpenAIEmbedder:
         logger.info("OpenAI embedder loaded: model=%s, dim=%d", self._model, self._dim)
 
     def _call_api(self, texts: List[str]) -> np.ndarray:
-        response = self._client.embeddings.create(model=self._model, input=texts)
-        vectors = [item.embedding for item in response.data]
-        return np.array(vectors, dtype=np.float32)
+        last_exc = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = self._client.embeddings.create(model=self._model, input=texts)
+                vectors = [item.embedding for item in response.data]
+                return np.array(vectors, dtype=np.float32)
+            except Exception as exc:
+                last_exc = exc
+                if attempt < _MAX_RETRIES:
+                    logger.warning(
+                        "OpenAI embedding call failed (attempt %d/%d): %s",
+                        attempt + 1,
+                        _MAX_RETRIES + 1,
+                        exc,
+                    )
+                    continue
+        raise last_exc  # type: ignore[misc]
 
     def get_sentence_embedding_dimension(self) -> int:
         return self._dim
@@ -54,7 +78,7 @@ class OpenAIEmbedder:
         sentences: Union[str, List[str]],
         normalize_embeddings: bool = True,
         show_progress_bar: bool = False,
-        batch_size: int = 512,
+        batch_size: int = 128,
         **kwargs,
     ) -> np.ndarray:
         """
@@ -64,11 +88,16 @@ class OpenAIEmbedder:
             sentences: Single string or list of strings
             normalize_embeddings: L2-normalize output vectors
             show_progress_bar: Ignored (kept for API compatibility)
-            batch_size: Max texts per API call
+            batch_size: Max texts per API call (default 128; API limit is 2048
+                        but lower values reduce per-request token pressure)
 
         Returns:
             np.ndarray of shape (n_sentences, embedding_dim)
         """
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Cannot encode: embedder has been closed")
+
         if isinstance(sentences, str):
             sentences = [sentences]
 
@@ -87,5 +116,6 @@ class OpenAIEmbedder:
         return result
 
     def close(self) -> None:
-        """No-op: OpenAI client holds no local GPU/ONNX resources to release."""
-        pass
+        """Mark embedder as closed. OpenAI client holds no local resources."""
+        with self._lock:
+            self._closed = True

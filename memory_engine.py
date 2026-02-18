@@ -1130,8 +1130,6 @@ class MemoryEngine:
     def _active_embed_model(self) -> str:
         if self._embed_provider == "openai":
             return self._embed_model or "text-embedding-3-small"
-        if self._embed_provider == "onnx":
-            return self._embed_model or self._model_name
         return self._embed_model or self._model_name
 
     def _make_embedder(self):
@@ -1144,9 +1142,8 @@ class MemoryEngine:
 
         if self._embed_provider == "openai":
             from openai_embedder import OpenAIEmbedder
-            import os as _os
             model = self._active_embed_model()
-            api_key = _os.getenv("OPENAI_API_KEY", "").strip() or None
+            api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
             if not api_key:
                 raise ValueError(
                     "EMBED_PROVIDER=openai requires OPENAI_API_KEY to be set"

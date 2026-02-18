@@ -54,6 +54,7 @@ ENV MODEL_CACHE_DIR=/data/model-cache \
 
 # Copy application code
 COPY onnx_embedder.py .
+COPY openai_embedder.py .
 COPY embedder_reloader.py .
 COPY memory_engine.py .
 COPY entity_locks.py .
