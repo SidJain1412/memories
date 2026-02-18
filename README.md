@@ -2,7 +2,7 @@
 
 Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector search.
 
-Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
+Works with **Claude Code**, **Cursor**, **Claude Desktop**, **Claude Chat**, **Codex**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
 Start here:
 - [Getting Started (10-15 min)](GETTING_STARTED.md)

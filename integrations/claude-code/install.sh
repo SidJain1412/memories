@@ -1,6 +1,6 @@
 #!/bin/bash
 # install.sh — installer for Memories automatic integrations
-# Usage: ./install.sh [--auto] [--claude] [--codex] [--openclaw] [--uninstall] [--dry-run]
+# Usage: ./install.sh [--auto] [--claude] [--codex] [--cursor] [--openclaw] [--uninstall] [--dry-run]
 set -euo pipefail
 
 # Colors
@@ -17,6 +17,7 @@ OPENCLAW_SKILL_SRC="$REPO_ROOT/integrations/openclaw-skill.md"
 
 TARGET_CLAUDE=false
 TARGET_CODEX=false
+TARGET_CURSOR=false
 TARGET_OPENCLAW=false
 EXPLICIT_TARGETS=false
 AUTO_DETECT=true
@@ -34,6 +35,7 @@ Options:
   --auto       Auto-detect targets (default)
   --claude     Install Claude Code hooks
   --codex      Install Codex hooks
+  --cursor     Install Cursor hooks
   --openclaw   Install OpenClaw skill
   --uninstall  Remove installed files for selected targets
   --dry-run    Print detected/selected targets and exit
@@ -41,7 +43,7 @@ Options:
 
 Examples:
   ./integrations/claude-code/install.sh
-  ./integrations/claude-code/install.sh --claude --codex
+  ./integrations/claude-code/install.sh --claude --codex --cursor
   ./integrations/claude-code/install.sh --auto --dry-run
 EOF
 }
@@ -58,6 +60,11 @@ for arg in "$@"; do
       ;;
     --codex)
       TARGET_CODEX=true
+      EXPLICIT_TARGETS=true
+      AUTO_DETECT=false
+      ;;
+    --cursor)
+      TARGET_CURSOR=true
       EXPLICIT_TARGETS=true
       AUTO_DETECT=false
       ;;
@@ -87,6 +94,7 @@ done
 detect_targets() {
   TARGET_CLAUDE=false
   TARGET_CODEX=false
+  TARGET_CURSOR=false
   TARGET_OPENCLAW=false
 
   if [ -d "$HOME/.claude" ] || [ -f "$HOME/.claude/settings.json" ]; then
@@ -94,6 +102,9 @@ detect_targets() {
   fi
   if [ -d "$HOME/.codex" ] || [ -f "$HOME/.codex/settings.json" ]; then
     TARGET_CODEX=true
+  fi
+  if [ -d "$HOME/.cursor" ]; then
+    TARGET_CURSOR=true
   fi
   if [ -d "$HOME/.openclaw" ] || [ -d "$HOME/.openclaw/skills" ]; then
     TARGET_OPENCLAW=true
@@ -105,13 +116,14 @@ if [ "$AUTO_DETECT" = true ] && [ "$EXPLICIT_TARGETS" = false ]; then
 fi
 
 # Fallback for first-time setup
-if [ "$TARGET_CLAUDE" = false ] && [ "$TARGET_CODEX" = false ] && [ "$TARGET_OPENCLAW" = false ]; then
+if [ "$TARGET_CLAUDE" = false ] && [ "$TARGET_CODEX" = false ] && [ "$TARGET_CURSOR" = false ] && [ "$TARGET_OPENCLAW" = false ]; then
   TARGET_CLAUDE=true
 fi
 
 target_list=()
 [ "$TARGET_CLAUDE" = true ] && target_list+=("claude")
 [ "$TARGET_CODEX" = true ] && target_list+=("codex")
+[ "$TARGET_CURSOR" = true ] && target_list+=("cursor")
 [ "$TARGET_OPENCLAW" = true ] && target_list+=("openclaw")
 TARGETS_CSV="$(IFS=, ; echo "${target_list[*]}")"
 
@@ -153,6 +165,7 @@ echo ""
 hooks_target_count=0
 [ "$TARGET_CLAUDE" = true ] && hooks_target_count=$((hooks_target_count + 1))
 [ "$TARGET_CODEX" = true ] && hooks_target_count=$((hooks_target_count + 1))
+[ "$TARGET_CURSOR" = true ] && hooks_target_count=$((hooks_target_count + 1))
 
 remove_target() {
   local label="$1"
@@ -176,6 +189,11 @@ if [ "$UNINSTALL" = true ]; then
   if [ "$TARGET_CODEX" = true ]; then
     remove_target "Codex hooks" "$HOME/.codex/hooks/memory"
     echo "  Manual cleanup: remove Memories hook entries from $HOME/.codex/settings.json"
+  fi
+
+  if [ "$TARGET_CURSOR" = true ]; then
+    remove_target "Cursor hooks" "$HOME/.claude/hooks/memory"
+    echo "  Manual cleanup: remove Memories hook entries from $HOME/.claude/settings.json"
   fi
 
   if [ "$TARGET_OPENCLAW" = true ]; then
@@ -306,6 +324,18 @@ install_hooks_target() {
   echo -e "  ${GREEN}[OK]${NC} Merged hook config into $settings_file"
 }
 
+install_cursor_target() {
+  # Cursor natively reads Claude Code's ~/.claude/settings.json via "Third-party skills".
+  # All hook events (SessionStart, UserPromptSubmit, Stop, SessionEnd, PreCompact) are
+  # supported with automatic name mapping. We install in Claude Code format and Cursor
+  # picks it up — no separate hooks.json needed.
+  install_hooks_target "Cursor" "$HOME/.claude/hooks/memory" "$HOME/.claude/settings.json"
+  echo ""
+  echo -e "  ${YELLOW}[ACTION REQUIRED]${NC} Enable third-party hooks in Cursor:"
+  echo -e "  Settings → Features → Third-party skills → toggle ON"
+  echo -e "  Then restart Cursor."
+}
+
 install_openclaw_target() {
   local skill_dir="$HOME/.openclaw/skills/memories"
   mkdir -p "$skill_dir"
@@ -319,6 +349,10 @@ fi
 
 if [ "$TARGET_CODEX" = true ]; then
   install_hooks_target "Codex" "$HOME/.codex/hooks/memory" "$HOME/.codex/settings.json"
+fi
+
+if [ "$TARGET_CURSOR" = true ]; then
+  install_cursor_target
 fi
 
 if [ "$TARGET_OPENCLAW" = true ]; then

@@ -1,6 +1,6 @@
 # Memories — Automatic Memory Layer Setup
 
-> **This document is designed to be fed directly to an LLM (Claude Code, Codex, OpenClaw, or any AI coding assistant) so it can set up automatic memory hooks for you.**
+> **This document is designed to be fed directly to an LLM (Claude Code, Cursor, Codex, OpenClaw, or any AI coding assistant) so it can set up automatic memory hooks for you.**
 
 ## What This Does
 
@@ -142,6 +142,31 @@ If you already have hooks in `settings.json`, merge the arrays — don't replace
 **Step 4: Verify**
 
 Start a new Claude Code session. You should see "Relevant Memories" injected at the top if you have existing memories for the project.
+
+---
+
+## Setup for Cursor
+
+Cursor supports full automatic memory via its **Third-party skills** feature, which reads Claude Code's `~/.claude/settings.json` directly. All 5 hook events work: `SessionStart`, `UserPromptSubmit`, `Stop`, `PreCompact`, and `SessionEnd`.
+
+### Step 1: Run the installer
+
+```bash
+cd ~/projects/memories
+./integrations/claude-code/install.sh --cursor
+```
+
+This copies hook scripts to `~/.claude/hooks/memory/` and merges hook config into `~/.claude/settings.json`.
+
+### Step 2: Enable Third-party skills in Cursor
+
+Go to **Cursor Settings → Features → Third-party skills** and toggle it **ON**, then restart Cursor.
+
+That's it — Cursor will automatically load and run the memory hooks from `~/.claude/settings.json`.
+
+### Manual setup (optional)
+
+Follow the Claude Code manual setup steps above (copy hooks, add env vars, edit `~/.claude/settings.json`), then enable Third-party skills in Cursor Settings.
 
 ---
 

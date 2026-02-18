@@ -52,7 +52,7 @@ docker compose up -d --build memories
 ./integrations/claude-code/install.sh --auto
 ```
 
-This auto-detects and configures Claude Code, Codex, and OpenClaw where available.
+This auto-detects and configures Claude Code, Cursor, Codex, and OpenClaw where available.
 
 For guided LLM setup, use:
 - [`integrations/QUICKSTART-LLM.md`](integrations/QUICKSTART-LLM.md)
