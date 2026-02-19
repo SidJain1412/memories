@@ -16,7 +16,7 @@ if [ -z "$MESSAGES" ]; then
   exit 0
 fi
 
-CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
+CWD=$(echo "$INPUT" | jq -r '.cwd // .workspace_roots[0] // "unknown"')
 PROJECT=$(basename "$CWD")
 
 BODY=$(jq -nc --arg msgs "$MESSAGES" --arg src "claude-code/$PROJECT" '{"messages": $msgs, "source": $src, "context": "session_end"}')

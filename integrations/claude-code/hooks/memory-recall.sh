@@ -12,7 +12,7 @@ MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
 MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 
 INPUT=$(cat)
-CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
+CWD=$(echo "$INPUT" | jq -r '.cwd // .workspace_roots[0] // empty')
 if [ -z "$CWD" ]; then
   exit 0
 fi

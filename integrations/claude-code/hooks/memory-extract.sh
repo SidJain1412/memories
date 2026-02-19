@@ -24,7 +24,7 @@ if [ -z "$MESSAGES" ]; then
   exit 0
 fi
 
-CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
+CWD=$(echo "$INPUT" | jq -r '.cwd // .workspace_roots[0] // "unknown"')
 PROJECT=$(basename "$CWD")
 
 # POST to extraction endpoint (fire-and-forget, async hook)
