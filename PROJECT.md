@@ -94,7 +94,7 @@ Client entry points:
 
 - REST API (all clients)
 - MCP tools (Claude Code/Desktop, Codex, MCP-capable clients)
-- Hook scripts (automatic retrieval/extraction flows)
+- Hook scripts (Claude Code 5-hook flow + Codex notify extraction)
 
 Integration docs:
 

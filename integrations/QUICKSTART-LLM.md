@@ -1,12 +1,12 @@
 # Memories — Automatic Memory Layer Setup
 
-> **This document is designed to be fed directly to an LLM (Claude Code, Cursor, Codex, OpenClaw, or any AI coding assistant) so it can set up automatic memory hooks for you.**
+> **This document is designed to be fed directly to an LLM (Claude Code, Codex, Cursor, OpenClaw, or any AI coding assistant) so it can set up automatic memory integration for you.**
 
 ## What This Does
 
-Memories is a local semantic memory service running at `http://localhost:8900`. This guide sets up **automatic hooks** so your AI assistant:
+Memories is a local semantic memory service running at `http://localhost:8900`. This guide sets up automatic memory integrations so your AI assistant:
 
-1. **Retrieves** relevant memories at session start and on every prompt (no manual search)
+1. **Retrieves** relevant memories during coding flow (fully automatic with Claude hooks; MCP-guided on Codex/Cursor/OpenClaw)
 2. **Extracts** facts from conversations and stores them automatically (no manual save)
 3. **Updates** stale memories intelligently using AUDN (Add/Update/Delete/Noop)
 
@@ -48,7 +48,7 @@ cd ~/projects/memories
 
 The installer will:
 1. Check Memories service health
-2. Ask which extraction provider to use (Anthropic, OpenAI, Ollama, or skip)
+2. Ask which extraction provider to use (Anthropic, OpenAI, ChatGPT Subscription, Ollama, or skip)
 3. Copy hook scripts to `~/.claude/hooks/memory/`
 4. Merge hook configuration into `~/.claude/settings.json`
 5. Write env files (`~/.config/memories/env` for hooks, repo `.env` for extraction)
@@ -175,23 +175,85 @@ Follow the Claude Code manual setup steps above (copy hooks, add env vars, edit 
 
 ## Setup for Codex
 
-Codex uses the same hooks format as Claude Code. Two options:
+Codex does **not** use Claude's 5-hook `settings.json` format. Codex-native integration uses:
+- `~/.codex/config.toml` for MCP + notify
+- a notify script for after-turn extraction
+- developer instructions to bias retrieval (`memory_search`) every turn
 
-### Option A: Symlink (if you cloned the memories repo)
-
-```bash
-mkdir -p ~/.codex/hooks
-ln -s ~/projects/memories/integrations/claude-code/hooks ~/.codex/hooks/memory
-```
-
-### Option B: Run the installer with --codex flag
+### Option A: Run the installer (recommended)
 
 ```bash
 cd ~/projects/memories
 ./integrations/claude-code/install.sh --codex
 ```
 
-This writes hooks to `~/.codex/` instead of `~/.claude/`.
+The installer will:
+1. Install `memory-codex-notify.sh` to `~/.codex/hooks/memory/`
+2. Add `notify = ["/Users/you/.codex/hooks/memory/memory-codex-notify.sh"]` to `~/.codex/config.toml` when `notify` is not already set
+3. Add MCP server config for `memories` to `~/.codex/config.toml` when missing
+4. Add default `developer_instructions` (if not already set) to bias `memory_search` usage
+
+### Option B: Manual setup
+
+**Step 1: Install notify script**
+
+```bash
+mkdir -p ~/.codex/hooks/memory
+cp ~/projects/memories/integrations/codex/memory-codex-notify.sh ~/.codex/hooks/memory/
+chmod +x ~/.codex/hooks/memory/memory-codex-notify.sh
+```
+
+**Step 2: Edit `~/.codex/config.toml`**
+
+```toml
+notify = ["/Users/you/.codex/hooks/memory/memory-codex-notify.sh"]
+
+[mcp_servers.memories]
+command = "node"
+args = ["/path/to/memories/mcp-server/index.js"]
+
+[mcp_servers.memories.env]
+MEMORIES_URL = "http://localhost:8900"
+MEMORIES_API_KEY = "your-api-key-here"
+```
+
+**Step 3: Restart Codex**
+
+Codex will expose `memory_search`, `memory_add`, and related tools via MCP.
+
+---
+
+## Setup for Cursor
+
+Cursor is MCP-first today.
+
+1. Install MCP server deps:
+
+```bash
+cd ~/projects/memories/mcp-server
+npm install
+```
+
+2. Add config to one of:
+- Global: `~/.cursor/mcp.json`
+- Project: `.cursor/mcp.json`
+
+```json
+{
+  "mcpServers": {
+    "memories": {
+      "command": "node",
+      "args": ["/path/to/memories/mcp-server/index.js"],
+      "env": {
+        "MEMORIES_URL": "http://localhost:8900",
+        "MEMORIES_API_KEY": "your-api-key-here"
+      }
+    }
+  }
+}
+```
+
+3. Restart Cursor.
 
 ---
 
@@ -205,7 +267,9 @@ OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update 
 
 ---
 
-## How the Hooks Work
+## How Integrations Work
+
+### Claude Code
 
 | Hook | Event | Sync? | What It Does |
 |------|-------|-------|-------------|
@@ -214,6 +278,15 @@ OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update 
 | `memory-extract.sh` | Stop | Async | POSTs the last exchange to `/memory/extract` for fact extraction |
 | `memory-flush.sh` | PreCompact | Async | Same as extract but with `context=pre_compact` (more aggressive before context loss) |
 | `memory-commit.sh` | SessionEnd | Async | Final extraction pass when session ends |
+
+### Codex
+
+| Mechanism | Event | What It Does |
+|-----------|-------|--------------|
+| `notify` + `memory-codex-notify.sh` | After each completed turn | Sends user+assistant exchange to `/memory/extract` (`context=after_agent`) |
+| MCP tools + developer instructions | Each new user turn | Drives `memory_search` usage before implementation-heavy responses |
+
+Codex currently does not expose Claude-style SessionStart/UserPromptSubmit/PreCompact/SessionEnd hook callbacks in `config.toml`.
 
 **Token cost:** ~1500 tokens/turn injected context (retrieval). Extraction is async and free if using Ollama, ~$0.001/turn with API providers.
 
@@ -225,12 +298,14 @@ OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update 
 |----------|------|-------------|-------|---------|
 | **Anthropic** (recommended) | ~$0.001/turn | Full (Add/Update/Delete/Noop) | ~1-2s | Best |
 | **OpenAI** | ~$0.001/turn | Full (Add/Update/Delete/Noop) | ~1-2s | Great |
-| **Ollama** | Free | Extract only (Add/Noop via novelty check) | ~5s | Good |
-| **Skip** | Free | None (retrieval only) | N/A | N/A |
+| **ChatGPT Subscription** | Free (your subscription) | Full (Add/Update/Delete/Noop) | ~1-2s | Great |
+| **Ollama** | Free | Full (Add/Update/Delete/Noop) | ~5s | Good |
+| **Skip** | Free | None by default (retrieval only) | N/A | N/A |
 
 - **Full AUDN** means the LLM compares new facts against existing memories and decides whether to add, update, delete, or skip
-- **Ollama** can extract facts but uses cosine similarity for dedup instead of LLM reasoning — no updates or deletions of stale memories
-- **Skip** means hooks only retrieve memories, never extract. Good for testing retrieval before enabling extraction.
+- **ChatGPT Subscription** requires one-time OAuth setup: `python -m memories auth chatgpt --client-id <your-client-id>`
+- **Ollama** uses JSON format constraint to produce structured AUDN decisions from local models
+- **Skip** means hooks retrieve memories. By default no new memories are added; optional fallback add mode exists (`EXTRACT_FALLBACK_ADD=true`) and also activates on provider runtime failures (for example 429/timeouts).
 
 ---
 
@@ -240,12 +315,30 @@ OpenClaw doesn't have hooks, so memory is agent-initiated via the skill. Update 
 |----------|---------|-------------|
 | `MEMORIES_URL` | `http://localhost:8900` | Memories service URL |
 | `MEMORIES_API_KEY` | (empty) | API key for Memories service auth |
-| `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `ollama`, or empty to disable |
+| `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `chatgpt-subscription`, `ollama`, or empty to disable |
 | `EXTRACT_MODEL` | (per provider) | Override model. Defaults: `claude-haiku-4-5-20251001`, `gpt-4.1-nano`, `gemma3:4b` |
 | `ANTHROPIC_API_KEY` | (none) | Required when `EXTRACT_PROVIDER=anthropic` |
 | `OPENAI_API_KEY` | (none) | Required when `EXTRACT_PROVIDER=openai` |
+| `CHATGPT_REFRESH_TOKEN` | (none) | Required when `EXTRACT_PROVIDER=chatgpt-subscription` (from `python -m memories auth chatgpt`) |
+| `CHATGPT_CLIENT_ID` | (none) | Required when `EXTRACT_PROVIDER=chatgpt-subscription` |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL (on Linux, use `http://localhost:11434`) |
-| `MEMORIES_HOOKS_DIR` | `~/.claude/hooks/memory` | Override hooks location |
+| `EXTRACT_FALLBACK_ADD` | `false` | Enable add-only fallback when extraction is disabled or provider calls fail at runtime |
+| `EXTRACT_FALLBACK_MAX_FACTS` | `1` | Max fallback facts per request |
+| `EXTRACT_FALLBACK_MIN_FACT_CHARS` | `24` | Minimum candidate fact length |
+| `EXTRACT_FALLBACK_MAX_FACT_CHARS` | `280` | Maximum candidate fact length |
+| `EXTRACT_FALLBACK_NOVELTY_THRESHOLD` | `0.88` | Novelty threshold for fallback adds |
+| `MEMORIES_HOOKS_DIR` | `~/.claude/hooks/memory` | Override Claude hooks location |
+
+Service-level runtime guardrails (set in Docker compose env):
+- `EMBEDDER_AUTO_RELOAD_ENABLED` (`true`/`false`)
+- `EMBEDDER_AUTO_RELOAD_RSS_KB_THRESHOLD`
+- `EMBEDDER_AUTO_RELOAD_CHECK_SEC`
+- `EMBEDDER_AUTO_RELOAD_HIGH_STREAK`
+- `EMBEDDER_AUTO_RELOAD_MIN_INTERVAL_SEC`
+- `EMBEDDER_AUTO_RELOAD_WINDOW_SEC`
+- `EMBEDDER_AUTO_RELOAD_MAX_PER_WINDOW`
+- `EMBEDDER_AUTO_RELOAD_MAX_ACTIVE_REQUESTS`
+- `EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH`
 
 ---
 
@@ -269,6 +362,9 @@ curl -s -X POST http://localhost:8900/memory/add \
 ```bash
 # Check extraction status
 curl -s -H "X-API-Key: $MEMORIES_API_KEY" http://localhost:8900/extract/status | jq .
+
+# Check auto-reload metrics
+curl -s -H "X-API-Key: $MEMORIES_API_KEY" http://localhost:8900/metrics | jq '.embedder_reload'
 
 # Expected (if configured):
 # {"enabled": true, "provider": "anthropic", "model": "claude-haiku-4-5-20251001", "status": "healthy"}
@@ -301,17 +397,28 @@ Remove or comment out `EXTRACT_PROVIDER` in repo `.env`:
 # EXTRACT_PROVIDER=anthropic
 ```
 
-The retrieval hooks will still work. Extraction hooks will silently skip (the Memories endpoint returns 501 when extraction is not configured).
+Retrieval still works. Extraction paths will return "not configured" unless fallback mode is enabled.
 
-### Remove all hooks
+Optional fallback mode:
+```bash
+export EXTRACT_FALLBACK_ADD=true
+```
+This enables strict add-only fallback writes (no AUDN update/delete behavior), including runtime provider failures such as quota/rate-limit errors.
+
+### Remove all integrations
 
 ```bash
-# Remove hook scripts
+# Remove Claude hooks
 rm -rf ~/.claude/hooks/memory/
 
-# Remove hook entries from settings.json
-# Edit ~/.claude/settings.json and remove the SessionStart, UserPromptSubmit,
-# Stop, PreCompact, and SessionEnd entries that reference memory-*.sh
+# Remove Codex notify hook
+rm -rf ~/.codex/hooks/memory/
+
+# Remove Codex config entries
+# Edit ~/.codex/config.toml and remove:
+# - notify entry that points to memory-codex-notify.sh
+# - [mcp_servers.memories] section
+# - [mcp_servers.memories.env] section
 
 # Remove env vars from hook/repo env files
 # Edit ~/.config/memories/env and remove MEMORIES_URL/MEMORIES_API_KEY
@@ -322,21 +429,27 @@ rm -rf ~/.claude/hooks/memory/
 
 ## Troubleshooting
 
-### Hooks not firing
+### Hooks / notify not firing
 
 ```bash
-# Check hook scripts are executable
+# Claude: check hook scripts are executable
 ls -la ~/.claude/hooks/memory/
 
-# Test a hook manually
+# Claude: test recall hook manually
 echo '{"cwd": "/Users/you/project", "session_type": "startup"}' | bash ~/.claude/hooks/memory/memory-recall.sh
+
+# Codex: check notify script
+ls -la ~/.codex/hooks/memory/
+
+# Codex: test notify script manually with a sample payload
+bash ~/.codex/hooks/memory/memory-codex-notify.sh '{"type":"agent-turn-complete","cwd":"/Users/you/project","input-messages":["remember this decision"],"last-assistant-message":"stored"}'
 ```
 
 ### Extraction returning 501
 
 ```bash
 # Extraction is disabled. Set EXTRACT_PROVIDER:
-echo 'EXTRACT_PROVIDER=anthropic' >> ~/projects/memories/.env  # or openai, ollama
+echo 'EXTRACT_PROVIDER=anthropic' >> ~/projects/memories/.env  # or openai, chatgpt-subscription, ollama
 # Then restart docker-compose and your Claude/Cursor/Codex session
 ```
 

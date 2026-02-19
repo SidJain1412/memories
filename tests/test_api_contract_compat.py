@@ -39,11 +39,21 @@ def client():
 
 def test_health_contract_keys(client):
     test_client, _ = client
-    response = test_client.get("/health")
+    # Authenticated health check returns full stats
+    response = test_client.get("/health", headers={"X-API-Key": "test-key"})
     assert response.status_code == 200
     body = response.json()
     assert body["service"] == "memories"
     assert {"status", "service", "version", "total_memories", "dimension", "model"} <= set(body)
+
+
+def test_health_unauthenticated_returns_minimal(client):
+    test_client, _ = client
+    # Unauthenticated health check returns minimal info (no stats leakage)
+    response = test_client.get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"status": "ok", "service": "memories", "version": "2.0.0"}
 
 
 def test_search_contract_shape(client):

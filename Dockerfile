@@ -62,12 +62,20 @@ COPY qdrant_config.py .
 COPY qdrant_store.py .
 COPY cloud_sync.py .
 COPY runtime_memory.py .
+COPY chatgpt_oauth.py .
+COPY memories_auth.py .
+COPY __main__.py .
 COPY llm_provider.py .
 COPY llm_extract.py .
 COPY app.py .
 COPY webui ./webui
 
-RUN mkdir -p /data/backups /data/model-cache
+# Create non-root user for runtime
+RUN useradd -r -m -s /bin/false memories && \
+    mkdir -p /data/backups /data/model-cache && \
+    chown -R memories:memories /data /opt/model-cache /app
+
+USER memories
 
 EXPOSE 8000
 

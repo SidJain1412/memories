@@ -19,10 +19,11 @@ fi
 
 PROJECT=$(basename "$CWD")
 
+BODY=$(jq -nc --arg q "project $PROJECT conventions decisions patterns" '{"query": $q, "k": 10, "hybrid": true}')
 RESULTS=$(curl -sf -X POST "$MEMORIES_URL/search" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $MEMORIES_API_KEY" \
-  -d "{\"query\": \"project $PROJECT conventions decisions patterns\", \"k\": 10, \"hybrid\": true}" \
+  -d "$BODY" \
   2>/dev/null \
   | jq -r '[.results[]] | .[0:8] | map("- \(.text)") | join("\n")' 2>/dev/null) || true
 

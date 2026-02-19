@@ -2,7 +2,7 @@
 
 Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector search.
 
-Works with **Claude Code**, **Cursor**, **Claude Desktop**, **Claude Chat**, **Codex**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
+Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
 Start here:
 - [Getting Started (10-15 min)](GETTING_STARTED.md)
@@ -39,9 +39,9 @@ The service runs at **http://localhost:8900**. API docs at http://localhost:8900
 ## Architecture
 
 ```
-AI Client (Claude, Cursor, Codex, ChatGPT, OpenClaw)
+AI Client (Claude, Codex, Cursor, ChatGPT, OpenClaw)
     |
-    |-- MCP protocol (Claude Code / Desktop)
+    |-- MCP protocol (Claude Code / Desktop / Codex / Cursor)
     |-- REST API (everything else)
     v
 MCP Server (mcp-server/index.js)
@@ -169,7 +169,7 @@ curl -X POST https://memory.yourdomain.com/search \
 
 ### Codex (OpenAI)
 
-Codex supports MCP natively.
+Codex supports MCP natively via `~/.codex/config.toml`.
 
 **Setup:**
 
@@ -180,7 +180,57 @@ cd memories/mcp-server
 npm install
 ```
 
-2. Add to your Codex MCP config:
+2. Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.memories]
+command = "node"
+args = ["/path/to/memories/mcp-server/index.js"]
+
+[mcp_servers.memories.env]
+MEMORIES_URL = "http://localhost:8900"
+MEMORIES_API_KEY = "your-api-key-here"
+```
+
+3. Restart Codex. The `memory_search`, `memory_add`, and other tools will be available.
+
+**Automatic memory layer for Codex:**
+
+```bash
+./integrations/claude-code/install.sh --codex
+```
+
+This configures:
+- MCP server registration in `~/.codex/config.toml`
+- `notify` hook script at `~/.codex/hooks/memory/memory-codex-notify.sh` for after-turn extraction
+- default `developer_instructions` (if not already set) to bias `memory_search` usage on each turn
+
+Codex currently exposes an after-turn `notify` hook, not Claude's 5-event hook surface.
+
+**Usage** (Codex will discover the tools automatically):
+
+- "Search memory for how we handle error logging"
+- "Store this architecture decision in memory"
+- "List all memories from the project-setup source"
+
+---
+
+### Cursor
+
+Cursor supports MCP with the same server.
+
+**Setup:**
+
+1. Install dependencies:
+
+```bash
+cd memories/mcp-server
+npm install
+```
+
+2. Add to Cursor MCP config:
+- Global: `~/.cursor/mcp.json`
+- Project: `.cursor/mcp.json`
 
 ```json
 {
@@ -197,13 +247,9 @@ npm install
 }
 ```
 
-3. Restart Codex. The `memory_search`, `memory_add`, and other tools will be available.
+3. Restart Cursor.
 
-**Usage** (Codex will discover the tools automatically):
-
-- "Search memory for how we handle error logging"
-- "Store this architecture decision in memory"
-- "List all memories from the project-setup source"
+Cursor support is MCP-first today (no automatic hook installer path yet).
 
 ---
 
@@ -518,6 +564,7 @@ GET  /stats
 GET  /health
 GET  /health/ready
 GET  /metrics
+POST /maintenance/embedder/reload
 ```
 
 ### Backups
@@ -551,7 +598,7 @@ Full OpenAPI schema at http://localhost:8900/docs.
 
 ## MCP Tools Reference
 
-When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are available:
+When connected via MCP (Claude Code, Claude Desktop, Codex, Cursor), these tools are available:
 
 | Tool | Description |
 |------|-------------|
@@ -585,6 +632,15 @@ When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are ava
 | `MEMORY_TRIM_ENABLED` | `true` | Run post-extract GC/allocator trim |
 | `MEMORY_TRIM_COOLDOWN_SEC` | `15` | Minimum seconds between trim attempts |
 | `MEMORY_TRIM_PERIODIC_SEC` | `5` | Periodic trim probe interval (seconds). Set `0` to disable background trim loop. |
+| `EMBEDDER_AUTO_RELOAD_ENABLED` | `false` | Enable periodic auto-reload of in-process embedder runtime |
+| `EMBEDDER_AUTO_RELOAD_RSS_KB_THRESHOLD` | `1200000` | RSS threshold (KB) required before auto-reload decisions |
+| `EMBEDDER_AUTO_RELOAD_CHECK_SEC` | `15` | Seconds between auto-reload checks |
+| `EMBEDDER_AUTO_RELOAD_HIGH_STREAK` | `3` | Consecutive high-RSS checks required before trigger |
+| `EMBEDDER_AUTO_RELOAD_MIN_INTERVAL_SEC` | `900` | Cooldown between reload attempts |
+| `EMBEDDER_AUTO_RELOAD_WINDOW_SEC` | `3600` | Rolling window size for reload cap |
+| `EMBEDDER_AUTO_RELOAD_MAX_PER_WINDOW` | `2` | Max reloads allowed per rolling window |
+| `EMBEDDER_AUTO_RELOAD_MAX_ACTIVE_REQUESTS` | `2` | Skip reload when active HTTP requests exceed this |
+| `EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH` | `0` | Skip reload when extract queue depth exceeds this |
 | `METRICS_LATENCY_SAMPLES` | `200` | Per-route latency sample window for `/metrics` percentiles |
 | `METRICS_TREND_SAMPLES` | `120` | Memory trend sample window exposed by `/metrics` |
 | `PORT` | `8000` | Internal service port |
@@ -596,6 +652,7 @@ Default compose files now include:
 - `MALLOC_ARENA_MAX=2` to reduce glibc arena fragmentation in multithreaded workloads
 - `MALLOC_TRIM_THRESHOLD_=131072` and `MALLOC_MMAP_THRESHOLD_=131072` to encourage earlier allocator release
 - extraction env passthrough (`EXTRACT_PROVIDER`, `EXTRACT_MODEL`, provider keys/URL) so deploys keep extraction enabled when set in shell or `.env`
+- embedder auto-reload env passthrough with anti-loop defaults (`EMBEDDER_AUTO_RELOAD_*`)
 
 ### MCP Server Environment
 
@@ -608,9 +665,12 @@ Default compose files now include:
 
 ## Automatic Memory Layer
 
-Makes memory retrieval and extraction automatic — no manual search/store needed. Hooks inject relevant memories into every prompt and extract facts from every conversation turn.
+Memories supports automatic retrieval/extraction, with client-specific behavior:
+- Claude Code: full 5-hook lifecycle (session start, each prompt, stop, pre-compact, session end)
+- Codex: native `notify` hook after each completed turn + MCP/developer instructions for retrieval
+- OpenClaw: skill-driven retrieval/extraction flow
 
-### How it works
+### Claude Code Hook Lifecycle
 
 | Event | Hook | What happens |
 |-------|------|-------------|
@@ -619,6 +679,15 @@ Makes memory retrieval and extraction automatic — no manual search/store neede
 | After response | `memory-extract.sh` | Extracts facts and stores via AUDN pipeline |
 | Before compaction | `memory-flush.sh` | Aggressive extraction before context loss |
 | Session end | `memory-commit.sh` | Final extraction pass |
+
+### Codex Lifecycle (Native)
+
+| Event | Mechanism | What happens |
+|-------|-----------|--------------|
+| After each completed turn | `notify` -> `memory-codex-notify.sh` | Sends user+assistant exchange to `/memory/extract` asynchronously |
+| On new turns | MCP tools + developer instructions | Encourages focused `memory_search` before implementation-heavy responses |
+
+Codex does not currently expose the Claude-style SessionStart/UserPromptSubmit/PreCompact/SessionEnd hook callbacks in `config.toml`.
 
 ### Quick setup
 
@@ -629,9 +698,10 @@ Makes memory retrieval and extraction automatic — no manual search/store neede
 
 This detects and configures any available targets on your machine:
 - Claude Code hooks (`~/.claude/settings.json`)
-- Cursor hooks (via Claude settings + third-party skills)
-- Codex hooks (`~/.codex/settings.json`)
+- Codex native config (`~/.codex/config.toml`)
 - OpenClaw skill (`~/.openclaw/skills/memories/SKILL.md`)
+
+Cursor is supported via manual MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.json`).
 
 The installer writes runtime config to:
 - `~/.config/memories/env` for hook vars (`MEMORIES_URL`, optional `MEMORIES_API_KEY`)
@@ -657,10 +727,16 @@ The installer writes runtime config to:
 |----------|------|------|-------|
 | Anthropic (recommended) | ~$0.001/turn | Full (Add/Update/Delete/Noop) | ~1-2s |
 | OpenAI | ~$0.001/turn | Full | ~1-2s |
-| Ollama | Free | Extract only (Add/Noop) | ~5s |
+| ChatGPT Subscription | Free (uses your subscription) | Full | ~1-2s |
+| Ollama | Free | Full | ~5s |
 | Skip | Free | None | N/A |
 
-Extraction is optional. Without it, hooks still retrieve memories — they just don't learn new ones automatically.
+Extraction is optional. Without it, retrieval still works.
+
+By default, automatic write hooks do not store new memories when extraction is disabled.
+If you want a degraded automatic-write mode, set `EXTRACT_FALLBACK_ADD=true` to enable a strict
+heuristic + novelty-check fallback that writes at most a small number of high-confidence facts
+when extraction is disabled or the configured provider fails at runtime (for example rate limits/timeouts).
 
 ### AUDN in plain English
 
@@ -679,8 +755,10 @@ Why it matters:
 ### Cost vs quality
 
 - **Anthropic/OpenAI extraction**: small usage cost (typically around ~$0.001/turn), full AUDN quality.
-- **Ollama extraction**: no API cost, but simplified decisions (`ADD/NOOP` only).
-- **Retrieval only** (`EXTRACT_PROVIDER` unset): no extraction model cost, but no new memories are learned automatically.
+- **ChatGPT Subscription extraction**: no additional API cost (uses your existing subscription), full AUDN quality.
+- **Ollama extraction**: no API cost, full AUDN quality (with JSON format constraint).
+- **Retrieval only** (`EXTRACT_PROVIDER` unset): no extraction model cost.
+- **Optional fallback writes** (`EXTRACT_FALLBACK_ADD=true`): add-only, heuristic extraction path (no AUDN update/delete) used when extraction is disabled or provider calls fail at runtime.
 
 ### Cost control knobs
 
@@ -695,6 +773,9 @@ Use these to keep extraction spend bounded:
 `POST /memory/extract` is async-first. It enqueues work and returns `202` with a `job_id`.
 Poll `GET /memory/extract/{job_id}` for `queued`, `running`, `completed`, or `failed`.
 If the queue is full, the API returns `429` with a `Retry-After` header.
+When extraction is disabled and `EXTRACT_FALLBACK_ADD=true`, `/memory/extract` runs an immediate
+fallback add path and still returns a job object. When extraction is configured but fails at runtime,
+the queued worker also falls back to add-only mode when `EXTRACT_FALLBACK_ADD=true`.
 
 ### Docker image targets (core / extract)
 
@@ -736,11 +817,18 @@ Ollama uses HTTP directly and does not need the extra SDKs, so `core` is enough 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `ollama`, or empty to disable |
+| `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `chatgpt-subscription`, `ollama`, or empty to disable |
 | `EXTRACT_MODEL` | (per provider) | Model override |
-| `ANTHROPIC_API_KEY` | (none) | Required for Anthropic provider |
+| `ANTHROPIC_API_KEY` | (none) | Required for Anthropic provider (standard key or `sk-ant-oat01-` OAuth token) |
 | `OPENAI_API_KEY` | (none) | Required for OpenAI provider |
+| `CHATGPT_REFRESH_TOKEN` | (none) | Required for ChatGPT Subscription provider (from `python -m memories auth chatgpt`) |
+| `CHATGPT_CLIENT_ID` | (none) | Required for ChatGPT Subscription provider |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL (on Linux, use `http://localhost:11434`) |
+| `EXTRACT_FALLBACK_ADD` | `false` | Enable add-only fallback writes when extraction is disabled or provider calls fail at runtime |
+| `EXTRACT_FALLBACK_MAX_FACTS` | `1` | Max fallback facts to store per extract request |
+| `EXTRACT_FALLBACK_MIN_FACT_CHARS` | `24` | Minimum candidate fact length for fallback |
+| `EXTRACT_FALLBACK_MAX_FACT_CHARS` | `280` | Maximum candidate fact length for fallback |
+| `EXTRACT_FALLBACK_NOVELTY_THRESHOLD` | `0.88` | Novelty threshold used by fallback add mode |
 | `EXTRACT_QUEUE_MAX` | `EXTRACT_MAX_INFLIGHT * 20` | Maximum queued extraction jobs before backpressure (`429`) |
 | `EXTRACT_JOB_RETENTION_SEC` | `300` | How long completed/failed extraction jobs stay queryable |
 | `EXTRACT_JOBS_MAX` | `200` | Hard cap on stored extraction job records (finished jobs evicted first) |
@@ -757,7 +845,12 @@ Mitigations built in:
 - `/memory/extract` request size limit (`MAX_EXTRACT_MESSAGE_CHARS`)
 - bounded in-flight extraction (`EXTRACT_MAX_INFLIGHT`)
 - post-extract + periodic memory reclamation (`MEMORY_TRIM_ENABLED`, `MEMORY_TRIM_COOLDOWN_SEC`, `MEMORY_TRIM_PERIODIC_SEC`)
+- optional auto-reload controller for the embedder runtime (`EMBEDDER_AUTO_RELOAD_*`)
 - bounded AUDN payload sizes (`EXTRACT_MAX_FACTS`, `EXTRACT_MAX_FACT_CHARS`, `EXTRACT_SIMILAR_TEXT_CHARS`)
+
+Observability:
+- `/metrics` includes `embedder_reload.auto` and `embedder_reload.manual` counters/state
+- manual reload endpoint: `POST /maintenance/embedder/reload`
 
 Reference benchmark: `docs/benchmarks/2026-02-17-memory-reclamation.md`
 
@@ -878,8 +971,11 @@ memories/
   app.py                  # FastAPI REST API
   memory_engine.py        # Memories engine (search, chunking, BM25, backups)
   onnx_embedder.py        # ONNX Runtime embedder (replaces PyTorch)
-  llm_provider.py         # LLM provider abstraction (Anthropic/OpenAI/Ollama)
+  llm_provider.py         # LLM provider abstraction (Anthropic/OpenAI/ChatGPT Subscription/Ollama)
   llm_extract.py          # Extraction pipeline with AUDN
+  chatgpt_oauth.py        # ChatGPT OAuth2+PKCE token exchange helpers
+  memories_auth.py        # CLI auth tool (python -m memories auth chatgpt/status)
+  __main__.py             # Entry point for python -m memories
   Dockerfile              # Multi-stage Docker build (core/extract targets)
   requirements.txt        # Python dependencies
   requirements-extract.txt # Optional extraction deps (Anthropic/OpenAI SDKs)
@@ -901,14 +997,18 @@ memories/
     app.js                # Browser-side pagination/filter logic
   integrations/
     claude-code/
-      install.sh          # Auto-detect installer (Claude/Cursor/Codex/OpenClaw)
-      hooks/              # 5 hook scripts + hooks.json
+      install.sh          # Auto-detect installer (Claude/Codex/Cursor/OpenClaw)
+      hooks/              # Claude Code 5-hook scripts + hooks.json
+    codex/
+      memory-codex-notify.sh # Codex notify hook script (after-turn extraction)
     claude-code.md        # Claude Code guide
     openclaw-skill.md     # OpenClaw SKILL.md
     QUICKSTART-LLM.md     # LLM-friendly setup guide
   tests/
     test_memory_engine.py # Memory engine tests
-    test_llm_provider.py  # LLM provider tests
+    test_llm_provider.py  # LLM provider tests (incl. ChatGPT Subscription)
+    test_chatgpt_oauth.py # OAuth PKCE + token exchange tests
+    test_memories_auth.py # CLI auth tool tests
     test_llm_extract.py   # Extraction pipeline tests
     test_extract_api.py   # API endpoint tests
     test_web_ui.py        # Web UI route/static tests

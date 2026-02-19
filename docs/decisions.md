@@ -67,7 +67,7 @@ This document captures key architecture decisions for Memories and the tradeoffs
 ## D6: Keep LLM Extraction Optional and Provider-Agnostic
 
 - Status: accepted
-- Decision: extraction lives behind explicit env configuration (`EXTRACT_PROVIDER`), with provider abstraction for Anthropic/OpenAI/Ollama.
+- Decision: extraction lives behind explicit env configuration (`EXTRACT_PROVIDER`), with provider abstraction for Anthropic/OpenAI/ChatGPT Subscription/Ollama.
 - Why:
   - base memory features remain fully local and zero-cost
   - users can choose accuracy/cost/privacy profile
@@ -87,6 +87,68 @@ This document captures key architecture decisions for Memories and the tradeoffs
 - Tradeoff:
   - small CPU overhead after extraction requests
   - allocator trim effectiveness depends on runtime/platform allocator behavior
+
+## D8: Embed OAuth Logic Directly Instead of Gateway Services
+
+- Status: accepted
+- Decision: port ChatGPT OAuth2+PKCE token exchange as pure-stdlib Python helpers (`chatgpt_oauth.py`) rather than running separate gateway services.
+- Why:
+  - zero new pip dependencies (all `urllib.request`, `hashlib`, `secrets`)
+  - no runtime services to manage — token exchange happens at provider init
+  - same pattern as existing Anthropic OAuth auto-detection
+  - CLI tool (`python -m memories auth chatgpt`) handles one-time browser-based setup
+- Tradeoff:
+  - eager token exchange in `__init__` blocks startup on network call (other providers defer to first `complete()`)
+  - refresh token is a long-lived secret stored in `~/.config/memories/env`
+
+## D9: Enable Full AUDN for Ollama via JSON Format Constraint
+
+- Status: accepted
+- Decision: set `supports_audn = True` on Ollama and add `"format": "json"` to the Ollama API payload.
+- Why:
+  - modern local models (Llama 3, Mistral, Qwen) reliably produce structured JSON when constrained
+  - `"format": "json"` is natively supported by Ollama and dramatically reduces parse failures
+  - eliminates the ADD/NOOP-only limitation for local-model users
+- Tradeoff:
+  - smaller/older local models may still produce malformed AUDN decisions
+  - fallback behavior on parse failure is ADD-all (same as before)
+
+## D10: Defense-in-Depth Input Validation on All Filesystem Paths
+
+- Status: accepted
+- Decision: validate all user-controlled strings that reach the filesystem with both character-level rejection and `Path.resolve().is_relative_to()` containment checks.
+- Why:
+  - multiple API endpoints accept user-supplied names that become filesystem paths (backup names, index build sources, S3 object keys)
+  - character-level checks (`..`, `/`, `\`) catch obvious traversal attempts
+  - `is_relative_to()` catches edge cases (symlinks, Unicode normalization) that character checks miss
+  - defense-in-depth: both layers must pass
+- Tradeoff:
+  - slightly more code per endpoint
+  - legitimate backup names containing `/` or `\` are rejected (acceptable constraint)
+
+## D11: Restrict CORS to Localhost Origins
+
+- Status: accepted
+- Decision: hardcode CORS `allow_origins` to `localhost:8000`, `localhost:8900`, `127.0.0.1:8000`, `127.0.0.1:8900` instead of `["*"]`.
+- Why:
+  - wildcard CORS exposes the authenticated API to any browser origin
+  - all current legitimate clients (web UI, MCP server) run on localhost
+  - reduces cross-origin attack surface when API key is available in the browser
+- Tradeoff:
+  - custom deployments on non-standard ports must update the origin list (via code change, not env var — intentional friction)
+  - remote web UIs would need a proxy or origin list extension
+
+## D12: Constant-Time Auth with Per-IP Rate Limiting
+
+- Status: accepted
+- Decision: use `hmac.compare_digest` for API key comparison and track per-IP failure counts (10/min limit before 429).
+- Why:
+  - timing attacks on string comparison can leak key bytes
+  - rate limiting prevents brute-force key guessing
+  - simple in-memory tracking avoids external dependencies
+- Tradeoff:
+  - in-memory failure tracking resets on restart
+  - no distributed rate limiting across replicas (acceptable for single-instance deployment)
 
 ---
 

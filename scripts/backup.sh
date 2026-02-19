@@ -22,7 +22,8 @@ set -e
 export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
 
 # Source env vars (cron doesn't load shell profile)
-[ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc" 2>/dev/null || true
+# Only source the memories-specific env file, not the full shell profile
+[ -f "$HOME/.config/memories/env" ] && source "$HOME/.config/memories/env" 2>/dev/null || true
 
 # Resolve paths
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -43,17 +43,25 @@ docker compose up -d --build memories
 | Mode | Cost | What you get |
 |------|------|--------------|
 | Retrieval only (`EXTRACT_PROVIDER` unset) | Free | Recalls existing memories, does not learn new ones automatically |
-| Ollama extraction (`EXTRACT_PROVIDER=ollama`) | Free | Learns new facts with simplified decisions (`ADD/NOOP`) |
+| Retrieval + fallback add (`EXTRACT_FALLBACK_ADD=true`) | Free | Recalls existing memories and stores a tiny set of high-confidence facts (add-only, no AUDN updates/deletes) when extraction is disabled or provider calls fail at runtime |
+| Ollama extraction (`EXTRACT_PROVIDER=ollama`) | Free | Full AUDN (`ADD/UPDATE/DELETE/NOOP`) via JSON-constrained local models |
+| ChatGPT Subscription (`EXTRACT_PROVIDER=chatgpt-subscription`) | Free (uses your subscription) | Full AUDN — requires one-time OAuth setup: `python -m memories auth chatgpt` |
 | Anthropic/OpenAI extraction | Small API cost (~$0.001/turn typical) | Full AUDN (`ADD/UPDATE/DELETE/NOOP`) and better long-term memory quality |
 
-## 4) Install hooks (recommended)
+## 4) Install integrations (recommended)
 
 ```bash
 ./integrations/claude-code/install.sh --auto
 ```
 
-This auto-detects and configures Claude Code, Cursor, Codex, and OpenClaw where available.
-It also writes:
+This auto-detects and configures:
+- Claude Code hooks (`~/.claude/settings.json`)
+- Codex native integration (`~/.codex/config.toml` + notify hook)
+- OpenClaw skill (`~/.openclaw/skills/memories/SKILL.md`)
+
+Cursor is supported via MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.json`) and is currently manual.
+
+The installer writes:
 - hook runtime vars to `~/.config/memories/env` (`MEMORIES_URL`, optional `MEMORIES_API_KEY`)
 - extraction provider vars to repo `.env` (`EXTRACT_PROVIDER`, provider keys/URL)
 
@@ -69,6 +77,17 @@ curl -s http://localhost:8900/extract/status | jq .
 Expected:
 - `enabled: true` when extraction is configured
 - selected `provider` and `model`
+
+### Optional: verify embedder auto-reload guardrails
+
+```bash
+curl -s http://localhost:8900/metrics | jq '.embedder_reload'
+```
+
+Expected (when enabled in compose env):
+- `enabled: true`
+- policy values under `policy`
+- runtime counters under `auto` and `manual`
 
 ## 6) First memory smoke test
 

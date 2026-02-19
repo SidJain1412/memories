@@ -19,8 +19,9 @@ fi
 CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
 PROJECT=$(basename "$CWD")
 
+BODY=$(jq -nc --arg msgs "$MESSAGES" --arg src "claude-code/$PROJECT" '{"messages": $msgs, "source": $src, "context": "session_end"}')
 curl -sf -X POST "$MEMORIES_URL/memory/extract" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $MEMORIES_API_KEY" \
-  -d "{\"messages\": $(echo "$MESSAGES" | jq -Rs), \"source\": \"claude-code/$PROJECT\", \"context\": \"session_end\"}" \
+  -d "$BODY" \
   > /dev/null 2>&1 || true

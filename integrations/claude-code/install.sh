@@ -14,6 +14,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HOOKS_SRC="$SCRIPT_DIR/hooks"
 OPENCLAW_SKILL_SRC="$REPO_ROOT/integrations/openclaw-skill.md"
+CODEX_NOTIFY_SRC="$REPO_ROOT/integrations/codex/memory-codex-notify.sh"
+
+CODEX_NOTIFY_MARKER="Memories Codex notify"
+CODEX_MCP_MARKER="Memories Codex MCP"
+CODEX_DEV_INSTR_MARKER="Memories Codex developer instructions"
 
 TARGET_CLAUDE=false
 TARGET_CODEX=false
@@ -34,7 +39,7 @@ Usage:
 Options:
   --auto       Auto-detect targets (default)
   --claude     Install Claude Code hooks
-  --codex      Install Codex hooks
+  --codex      Install Codex integration (notify + MCP)
   --cursor     Install Cursor hooks
   --openclaw   Install OpenClaw skill
   --uninstall  Remove installed files for selected targets
@@ -100,7 +105,7 @@ detect_targets() {
   if [ -d "$HOME/.claude" ] || [ -f "$HOME/.claude/settings.json" ]; then
     TARGET_CLAUDE=true
   fi
-  if [ -d "$HOME/.codex" ] || [ -f "$HOME/.codex/settings.json" ]; then
+  if [ -d "$HOME/.codex" ] || [ -f "$HOME/.codex/config.toml" ]; then
     TARGET_CODEX=true
   fi
   if [ -d "$HOME/.cursor" ]; then
@@ -158,6 +163,51 @@ hooks_target_count=0
 [ "$TARGET_CODEX" = true ] && hooks_target_count=$((hooks_target_count + 1))
 [ "$TARGET_CURSOR" = true ] && hooks_target_count=$((hooks_target_count + 1))
 
+append_marked_block() {
+  local file="$1"
+  local marker="$2"
+  local body="$3"
+  local start="# BEGIN $marker"
+  local end="# END $marker"
+
+  if grep -Fq "$start" "$file" 2>/dev/null; then
+    return 0
+  fi
+
+  {
+    echo ""
+    echo "$start"
+    printf '%s\n' "$body"
+    echo "$end"
+  } >> "$file"
+}
+
+remove_marked_block() {
+  local file="$1"
+  local marker="$2"
+  local start="# BEGIN $marker"
+  local end="# END $marker"
+
+  if [ ! -f "$file" ] || ! grep -Fq "$start" "$file"; then
+    return 0
+  fi
+
+  awk -v start="$start" -v end="$end" '
+    $0 == start { skip = 1; next }
+    $0 == end { skip = 0; next }
+    !skip { print }
+  ' "$file" > "$file.tmp"
+  mv "$file.tmp" "$file"
+  echo -e "  ${GREEN}[OK]${NC} Removed $marker block from $file"
+}
+
+toml_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '%s' "$value"
+}
+
 remove_target() {
   local label="$1"
   local path="$2"
@@ -178,8 +228,11 @@ if [ "$UNINSTALL" = true ]; then
   fi
 
   if [ "$TARGET_CODEX" = true ]; then
-    remove_target "Codex hooks" "$HOME/.codex/hooks/memory"
-    echo "  Manual cleanup: remove Memories hook entries from $HOME/.codex/settings.json"
+    remove_target "Codex notify hook" "$HOME/.codex/hooks/memory"
+    remove_marked_block "$HOME/.codex/config.toml" "$CODEX_NOTIFY_MARKER"
+    remove_marked_block "$HOME/.codex/config.toml" "$CODEX_MCP_MARKER"
+    remove_marked_block "$HOME/.codex/config.toml" "$CODEX_DEV_INSTR_MARKER"
+    echo "  Manual cleanup (if needed): remove custom notify/mcp/developer_instructions entries from $HOME/.codex/config.toml"
   fi
 
   if [ "$TARGET_CURSOR" = true ]; then
@@ -197,6 +250,7 @@ if [ "$UNINSTALL" = true ]; then
 fi
 
 MEMORIES_URL="${MEMORIES_URL:-http://localhost:8900}"
+MEMORIES_API_KEY="${MEMORIES_API_KEY:-}"
 
 echo -e "[1/4] Checking Memories service at ${BLUE}$MEMORIES_URL${NC}..."
 HEALTH=$(curl -sf "$MEMORIES_URL/health" 2>/dev/null || echo "FAIL")
@@ -334,12 +388,85 @@ install_openclaw_target() {
   echo -e "  ${GREEN}[OK]${NC} Installed OpenClaw skill: $skill_dir/SKILL.md"
 }
 
+install_codex_target() {
+  local hook_dir="$HOME/.codex/hooks/memory"
+  local notify_script="$hook_dir/memory-codex-notify.sh"
+  local codex_config="$HOME/.codex/config.toml"
+
+  mkdir -p "$hook_dir"
+  cp "$CODEX_NOTIFY_SRC" "$notify_script"
+  chmod +x "$notify_script"
+  echo -e "  ${GREEN}[OK]${NC} Installed Codex notify hook: $notify_script"
+
+  mkdir -p "$(dirname "$codex_config")"
+  touch "$codex_config"
+
+  if grep -Eq '^[[:space:]]*notify[[:space:]]*=' "$codex_config"; then
+    if grep -Fq "$notify_script" "$codex_config"; then
+      echo -e "  ${YELLOW}[SKIP]${NC} Codex notify already references Memories hook"
+    else
+      echo -e "  ${YELLOW}[WARN]${NC} Existing notify entry found in $codex_config"
+      echo "       Add this manually to enable extraction hook:"
+      echo "       notify = [\"$notify_script\"]"
+    fi
+  else
+    local escaped_notify_script
+    escaped_notify_script=$(toml_escape "$notify_script")
+    append_marked_block "$codex_config" "$CODEX_NOTIFY_MARKER" "notify = [\"$escaped_notify_script\"]"
+    echo -e "  ${GREEN}[OK]${NC} Added Codex notify config in $codex_config"
+  fi
+
+  if grep -Eq '^[[:space:]]*\[mcp_servers\.memories\][[:space:]]*$' "$codex_config"; then
+    echo -e "  ${YELLOW}[SKIP]${NC} Codex MCP server 'memories' already configured"
+  else
+    local escaped_repo_mcp
+    local escaped_memories_url
+    local escaped_memories_api_key
+    escaped_repo_mcp=$(toml_escape "$REPO_ROOT/mcp-server/index.js")
+    escaped_memories_url=$(toml_escape "$MEMORIES_URL")
+    escaped_memories_api_key=$(toml_escape "$MEMORIES_API_KEY")
+    local mcp_block
+    mcp_block=$(cat <<EOF
+[mcp_servers.memories]
+command = "node"
+args = ["$escaped_repo_mcp"]
+
+[mcp_servers.memories.env]
+MEMORIES_URL = "$escaped_memories_url"
+MEMORIES_API_KEY = "$escaped_memories_api_key"
+EOF
+)
+    append_marked_block "$codex_config" "$CODEX_MCP_MARKER" "$mcp_block"
+    echo -e "  ${GREEN}[OK]${NC} Added Codex MCP config in $codex_config"
+  fi
+
+  if grep -Eq '^[[:space:]]*developer_instructions[[:space:]]*=' "$codex_config"; then
+    echo -e "  ${YELLOW}[SKIP]${NC} developer_instructions already configured in $codex_config"
+  else
+    local dev_instructions_block
+    dev_instructions_block=$(cat <<'EOF'
+developer_instructions = """
+Use the Memories MCP tools as your memory layer.
+
+On each user turn:
+1. Run one focused memory_search query before implementation-heavy responses.
+2. Reuse retrieved decisions/patterns to avoid asking for repeated project context.
+3. Store durable decisions with memory_add using stable source labels.
+4. Keep memory operations concise: usually 1 search, then proceed.
+"""
+EOF
+)
+    append_marked_block "$codex_config" "$CODEX_DEV_INSTR_MARKER" "$dev_instructions_block"
+    echo -e "  ${GREEN}[OK]${NC} Added Codex developer instructions in $codex_config"
+  fi
+}
+
 if [ "$TARGET_CLAUDE" = true ]; then
   install_hooks_target "Claude" "$HOME/.claude/hooks/memory" "$HOME/.claude/settings.json"
 fi
 
 if [ "$TARGET_CODEX" = true ]; then
-  install_hooks_target "Codex" "$HOME/.codex/hooks/memory" "$HOME/.codex/settings.json"
+  install_codex_target
 fi
 
 if [ "$TARGET_CURSOR" = true ]; then

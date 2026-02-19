@@ -5,13 +5,14 @@ CRUD operations, and structured logging.
 """
 
 import asyncio
+import hmac
 import math
 import os
 import re
 import logging
 import threading
 import time
-from collections import deque
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -131,9 +132,18 @@ EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH = _env_int(
 )
 METRICS_LATENCY_SAMPLES = _env_int("METRICS_LATENCY_SAMPLES", 200, minimum=20)
 METRICS_TREND_SAMPLES = _env_int("METRICS_TREND_SAMPLES", 120, minimum=5)
+EXTRACT_FALLBACK_ADD_ENABLED = _env_bool("EXTRACT_FALLBACK_ADD", False)
+EXTRACT_FALLBACK_MAX_FACTS = _env_int("EXTRACT_FALLBACK_MAX_FACTS", 1, minimum=1)
+EXTRACT_FALLBACK_MIN_FACT_CHARS = _env_int("EXTRACT_FALLBACK_MIN_FACT_CHARS", 24, minimum=5)
+EXTRACT_FALLBACK_MAX_FACT_CHARS = _env_int("EXTRACT_FALLBACK_MAX_FACT_CHARS", 280, minimum=32)
+EXTRACT_FALLBACK_NOVELTY_THRESHOLD = min(
+    1.0,
+    _env_float("EXTRACT_FALLBACK_NOVELTY_THRESHOLD", 0.88, minimum=0.0),
+)
 
 extract_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=EXTRACT_QUEUE_MAX)
 extract_jobs: Dict[str, Dict[str, Any]] = {}
+extract_jobs_lock: asyncio.Lock = asyncio.Lock()
 extract_workers: List[asyncio.Task] = []
 memory_trimmer = MemoryTrimmer(
     enabled=MEMORY_TRIM_ENABLED,
@@ -199,15 +209,29 @@ embedder_reload_metrics: Dict[str, Any] = {
 
 # -- Auth ---------------------------------------------------------------------
 
+_auth_failures: Dict[str, list] = defaultdict(list)
+
 async def verify_api_key(request: Request):
-    """Check X-API-Key header if API_KEY is configured."""
+    """Check X-API-Key header if API_KEY is configured.
+
+    Uses constant-time comparison and per-IP rate limiting on failures.
+    """
     if not API_KEY:
         return  # No auth configured
     path = request.url.path
     if path in {"/health", "/health/ready", "/ui"} or path.startswith("/ui/"):
         return  # Allow unauthenticated health checks + UI shell/static files
+
+    # Rate limit failed auth attempts (10 per minute per IP)
+    ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    _auth_failures[ip] = [t for t in _auth_failures[ip] if now - t < 60]
+    if len(_auth_failures[ip]) >= 10:
+        raise HTTPException(status_code=429, detail="Too many failed authentication attempts")
+
     key = request.headers.get("X-API-Key", "")
-    if key != API_KEY:
+    if not hmac.compare_digest(key.encode(), API_KEY.encode()):
+        _auth_failures[ip].append(now)
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
@@ -381,6 +405,123 @@ def _trim_finished_extract_jobs() -> None:
             extract_jobs.pop(jid, None)
 
 
+_FALLBACK_DECISION_PATTERN = re.compile(
+    r"\b("
+    r"decide(?:d|s|ing)?|decision|prefer|standard|policy|"
+    r"we\s+should|we\s+will|let'?s|going\s+with|"
+    r"use\s+[a-z0-9_.-]+|remember\s+"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _normalize_candidate_text(text: str) -> str:
+    """Normalize one candidate line for conservative fallback extraction."""
+    compact = re.sub(r"\s+", " ", text.strip())
+    compact = re.sub(r"^(User|Assistant)\s*:\s*", "", compact, flags=re.IGNORECASE)
+    return compact.strip()
+
+
+def _fallback_extract_facts(messages: str) -> List[str]:
+    """
+    Extract a tiny set of high-confidence fact candidates from raw transcript text.
+
+    This is intentionally conservative: if unsure, emit no facts.
+    """
+    candidates: List[str] = []
+    seen = set()
+    for raw_line in messages.splitlines():
+        line = _normalize_candidate_text(raw_line)
+        if not line:
+            continue
+        if line.endswith("?"):
+            continue
+        if len(line) < EXTRACT_FALLBACK_MIN_FACT_CHARS:
+            continue
+        if len(line) > EXTRACT_FALLBACK_MAX_FACT_CHARS:
+            continue
+        if len(line.split()) < 4:
+            continue
+        if not _FALLBACK_DECISION_PATTERN.search(line):
+            continue
+
+        lowered = line.lower()
+        if lowered.startswith(("ok ", "okay ", "sure ", "thanks", "thank you")):
+            continue
+
+        if line not in seen:
+            seen.add(line)
+            candidates.append(line)
+        if len(candidates) >= EXTRACT_FALLBACK_MAX_FACTS:
+            break
+
+    return candidates
+
+
+def _run_fallback_extraction(messages: str, source: str, context: str) -> Dict[str, Any]:
+    """Fallback add-only extraction path for disabled or runtime-failed providers."""
+    facts = _fallback_extract_facts(messages)
+    actions: List[Dict[str, Any]] = []
+    stored_count = 0
+    source_value = source or "extract/fallback"
+
+    for fact in facts:
+        is_new, similar = memory.is_novel(fact, threshold=EXTRACT_FALLBACK_NOVELTY_THRESHOLD)
+        if is_new:
+            ids = memory.add_memories(
+                texts=[fact],
+                sources=[source_value],
+                metadata_list=[{"extraction_mode": "fallback_add", "context": context}],
+                deduplicate=False,
+            )
+            if ids:
+                stored_count += 1
+                actions.append(
+                    {
+                        "action": "add",
+                        "text": fact,
+                        "id": ids[0],
+                        "mode": "fallback_add",
+                    }
+                )
+        else:
+            actions.append(
+                {
+                    "action": "noop",
+                    "text": fact,
+                    "mode": "fallback_add",
+                    "matched_id": similar.get("id") if similar else None,
+                    "similarity": similar.get("similarity") if similar else None,
+                }
+            )
+
+    return {
+        "actions": actions,
+        "extracted_count": len(facts),
+        "stored_count": stored_count,
+        "updated_count": 0,
+        "deleted_count": 0,
+        "mode": "fallback_add",
+    }
+
+
+def _should_use_runtime_fallback(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    return result.get("error") == "provider_runtime_failure"
+
+
+def _merge_runtime_fallback_result(primary_result: Dict[str, Any], fallback_result: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(fallback_result)
+    merged["fallback_triggered"] = True
+    merged["fallback_reason"] = primary_result.get("error")
+    if primary_result.get("error_stage"):
+        merged["fallback_source_stage"] = primary_result.get("error_stage")
+    if primary_result.get("error_message"):
+        merged["primary_error"] = primary_result.get("error_message")
+    return merged
+
+
 def _ensure_extract_workers_started() -> None:
     if extract_provider is None or run_extraction is None:
         return
@@ -426,6 +567,22 @@ async def _extract_worker(worker_id: int) -> None:
                 request_data["source"],
                 request_data["context"],
             )
+            if EXTRACT_FALLBACK_ADD_ENABLED and _should_use_runtime_fallback(result):
+                fallback_result = await run_in_threadpool(
+                    _run_fallback_extraction,
+                    request_data["messages"],
+                    request_data["source"],
+                    request_data["context"],
+                )
+                result = _merge_runtime_fallback_result(result, fallback_result)
+                logger.info(
+                    "Extract runtime fallback completed: job_id=%s source=%s context=%s extracted=%d stored=%d",
+                    job_id,
+                    request_data["source"],
+                    request_data["context"],
+                    result.get("extracted_count", 0),
+                    result.get("stored_count", 0),
+                )
             if job_state is not None:
                 job_state["status"] = "completed"
                 job_state["completed_at"] = _utc_now_iso()
@@ -618,7 +775,12 @@ if UI_DIR.exists():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:8900",
+        "http://127.0.0.1:8900",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -745,10 +907,19 @@ class SupersedeRequest(BaseModel):
 # -- Endpoints ----------------------------------------------------------------
 
 @app.get("/health")
-async def health():
-    """Lightweight health check (no filesystem I/O)"""
-    stats = memory.stats_light()
-    return {"status": "ok", "service": "memories", "version": "2.0.0", **stats}
+async def health(request: Request):
+    """Lightweight health check (no filesystem I/O).
+
+    Unauthenticated callers get minimal response; authenticated callers get full stats.
+    """
+    base = {"status": "ok", "service": "memories", "version": "2.0.0"}
+    # Only include detailed stats for authenticated callers
+    if not API_KEY or hmac.compare_digest(
+        request.headers.get("X-API-Key", "").encode(), API_KEY.encode()
+    ):
+        stats = memory.stats_light()
+        return {**base, **stats}
+    return base
 
 
 @app.get("/health/ready")
@@ -836,7 +1007,7 @@ async def reload_embedder():
             manual_metrics["last_error"] = str(e)
             manual_metrics["last_error_at"] = _utc_now_iso()
         logger.exception("Embedder reload failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # -- Search -------------------------------------------------------------------
@@ -864,7 +1035,7 @@ async def search(request: SearchRequest):
         return {"query": request.query, "results": results, "count": len(results)}
     except Exception as e:
         logger.exception("Search failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/search/batch")
@@ -892,7 +1063,7 @@ async def search_batch(request: SearchBatchRequest):
         return {"results": outputs, "count": len(outputs)}
     except Exception as e:
         logger.exception("Batch search failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # -- Memory CRUD --------------------------------------------------------------
@@ -915,7 +1086,7 @@ async def add_memory(request: AddMemoryRequest):
         }
     except Exception as e:
         logger.exception("Add memory failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/add-batch")
@@ -925,8 +1096,9 @@ async def add_batch(request: AddBatchRequest):
     try:
         texts = [m.text for m in request.memories]
         sources = [m.source for m in request.memories]
-        metadata_list = [m.metadata for m in request.memories if m.metadata]
-        if len(metadata_list) != len(texts):
+        # Preserve per-item metadata (None for rows without metadata)
+        metadata_list = [m.metadata for m in request.memories]
+        if not any(metadata_list):
             metadata_list = None
 
         ids = memory.add_memories(
@@ -943,7 +1115,7 @@ async def add_batch(request: AddBatchRequest):
         }
     except Exception as e:
         logger.exception("Add batch failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.delete("/memory/{memory_id}")
@@ -957,7 +1129,7 @@ async def delete_memory(memory_id: int):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Delete failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/memory/{memory_id}")
@@ -969,7 +1141,7 @@ async def get_memory(memory_id: int):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Get memory failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/get-batch")
@@ -980,7 +1152,7 @@ async def get_memory_batch(request: MemoryGetBatchRequest):
         return {**result, "count": len(result["memories"])}
     except Exception as e:
         logger.exception("Get batch failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/delete-by-source")
@@ -992,7 +1164,7 @@ async def delete_by_source(request: DeleteBySourceRequest):
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete by source failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/delete-batch")
@@ -1004,7 +1176,7 @@ async def delete_batch(request: DeleteBatchRequest):
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete batch failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/delete-by-prefix")
@@ -1016,7 +1188,7 @@ async def delete_by_prefix(request: DeleteByPrefixRequest):
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete by prefix failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.patch("/memory/{memory_id}")
@@ -1036,7 +1208,7 @@ async def patch_memory(memory_id: int, request: PatchMemoryRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Patch memory failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/upsert")
@@ -1052,7 +1224,7 @@ async def upsert_memory(request: UpsertMemoryRequest):
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Upsert memory failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/upsert-batch")
@@ -1072,7 +1244,7 @@ async def upsert_memory_batch(request: UpsertBatchRequest):
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Upsert batch failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/is-novel")
@@ -1089,7 +1261,7 @@ async def is_novel(request: IsNovelRequest):
         }
     except Exception as e:
         logger.exception("Is-novel check failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # -- Browse / List ------------------------------------------------------------
@@ -1119,8 +1291,14 @@ async def build_index(request: BuildIndexRequest):
                 *[str(p) for p in (workspace / "memory").glob("*.md")],
             ]
         else:
-            workspace = Path(WORKSPACE_DIR)
-            sources = [str(workspace / s) for s in request.sources]
+            workspace = Path(WORKSPACE_DIR).resolve()
+            sources = []
+            for s in request.sources:
+                full_path = (workspace / s).resolve()
+                if full_path.is_relative_to(workspace):
+                    sources.append(str(full_path))
+                else:
+                    logger.warning("Path traversal blocked in index build: %s", s)
 
         sources = [s for s in sources if Path(s).exists()]
 
@@ -1129,7 +1307,7 @@ async def build_index(request: BuildIndexRequest):
         return {"success": True, **result, "message": "Index rebuilt successfully"}
     except Exception as e:
         logger.exception("Index build failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # -- Deduplication ------------------------------------------------------------
@@ -1145,7 +1323,7 @@ async def deduplicate(request: DeduplicateRequest):
         return result
     except Exception as e:
         logger.exception("Deduplication failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # -- Backups ------------------------------------------------------------------
@@ -1165,7 +1343,7 @@ async def list_backups():
         }
     except Exception as e:
         logger.exception("List backups failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/backup")
@@ -1180,7 +1358,7 @@ async def create_backup(prefix: str = Query("manual", max_length=50)):
         }
     except Exception as e:
         logger.exception("Backup failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/restore")
@@ -1194,7 +1372,7 @@ async def restore_backup(request: RestoreRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Restore failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # -- Cloud Sync ---------------------------------------------------------------
@@ -1223,7 +1401,7 @@ async def sync_status():
         }
     except Exception as e:
         logger.exception("Sync status check failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/sync/upload")
@@ -1246,7 +1424,7 @@ async def sync_upload():
         }
     except Exception as e:
         logger.exception("Manual upload failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/sync/download")
@@ -1276,9 +1454,15 @@ async def sync_download(backup_name: Optional[str] = None, confirm: bool = False
             **result,
             "message": f"Downloaded {backup_name} from cloud. Use /restore to apply it."
         }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Backup not found in cloud")
     except Exception as e:
         logger.exception("Cloud download failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/sync/snapshots")
@@ -1292,7 +1476,7 @@ async def sync_snapshots():
         return {"snapshots": snapshots, "count": len(snapshots)}
     except Exception as e:
         logger.exception("List remote snapshots failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/sync/restore/{backup_name}")
@@ -1322,9 +1506,15 @@ async def sync_restore(backup_name: str, confirm: bool = False):
             "restored": restore_result,
             "message": f"Successfully restored {backup_name} from cloud"
         }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Cloud restore failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # -- Extraction endpoints -----------------------------------------------------
@@ -1333,7 +1523,53 @@ async def sync_restore(backup_name: str, confirm: bool = False):
 async def memory_extract(request: ExtractRequest):
     """Queue extraction and return immediately."""
     if extract_provider is None or run_extraction is None:
-        raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
+        if not EXTRACT_FALLBACK_ADD_ENABLED:
+            raise HTTPException(status_code=501, detail="Extraction not configured. Set EXTRACT_PROVIDER env var.")
+
+        job_id = uuid4().hex
+        extract_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "source": request.source,
+            "context": request.context,
+            "message_length": len(request.messages),
+            "created_at": _utc_now_iso(),
+            "started_at": _utc_now_iso(),
+            "mode": "fallback_add",
+        }
+        try:
+            result = await run_in_threadpool(
+                _run_fallback_extraction,
+                request.messages,
+                request.source,
+                request.context,
+            )
+            extract_jobs[job_id]["status"] = "completed"
+            extract_jobs[job_id]["completed_at"] = _utc_now_iso()
+            extract_jobs[job_id]["result"] = result
+            logger.info(
+                "Extract fallback completed: job_id=%s source=%s context=%s extracted=%d stored=%d",
+                job_id,
+                request.source,
+                request.context,
+                result.get("extracted_count", 0),
+                result.get("stored_count", 0),
+            )
+        except Exception as e:
+            logger.exception("Extract fallback failed: job_id=%s", job_id)
+            extract_jobs[job_id]["status"] = "failed"
+            extract_jobs[job_id]["completed_at"] = _utc_now_iso()
+            extract_jobs[job_id]["error"] = str(e)
+        finally:
+            _trim_finished_extract_jobs()
+
+        return {
+            "job_id": job_id,
+            "status": extract_jobs[job_id]["status"],
+            "queue_depth": extract_queue.qsize(),
+            "result_url": f"/memory/extract/{job_id}",
+        }
+
     _ensure_extract_workers_started()
     job_id = uuid4().hex
     extract_jobs[job_id] = {
@@ -1416,7 +1652,7 @@ async def memory_supersede(request: SupersedeRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Supersede failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/extract/status")
@@ -1428,6 +1664,7 @@ async def extract_status():
         "queue_remaining": max(0, EXTRACT_QUEUE_MAX - extract_queue.qsize()),
         "workers": EXTRACT_MAX_INFLIGHT,
         "jobs_tracked": len(extract_jobs),
+        "fallback_add_enabled": EXTRACT_FALLBACK_ADD_ENABLED,
     }
 
     if extract_provider is None:

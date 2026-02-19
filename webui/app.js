@@ -3,7 +3,7 @@ const state = {
   limit: 20,
   source: "",
   total: 0,
-  apiKey: localStorage.getItem("faiss_ui_api_key") || "",
+  apiKey: sessionStorage.getItem("faiss_ui_api_key") || "",
 };
 
 const els = {
@@ -32,7 +32,7 @@ function authHeaders() {
 
 function syncApiKeyFromInput() {
   state.apiKey = (els.apiKey.value || "").trim();
-  localStorage.setItem("faiss_ui_api_key", state.apiKey);
+  sessionStorage.setItem("faiss_ui_api_key", state.apiKey);
 }
 
 async function parseErrorDetail(resp) {
