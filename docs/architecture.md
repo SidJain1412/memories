@@ -145,9 +145,37 @@ This keeps steady-state usage near baseline while allowing occasional burst capa
 
 ## 7) Security and Exposure
 
-- API key auth is optional (`API_KEY`)
-- Local-only deployment is the default recommendation
-- If exposed publicly, use HTTPS + strong API key + network controls + rate limiting upstream
+### Authentication
+
+- API key auth is optional (`API_KEY` env var); omitting it disables auth entirely (suitable for local-only)
+- Constant-time comparison (`hmac.compare_digest`) prevents timing-based key extraction
+- Per-IP rate limiting on failed auth attempts (10 failures per minute per IP before 429)
+
+### Input validation
+
+- Path traversal prevention on all filesystem-facing inputs: `/index/build` sources, `/restore` backup names, `/sync/download` and `/sync/restore` backup names, S3 object keys during cloud download
+- Traversal checks use both character-level rejection (`..`, `/`, `\\`) and `Path.resolve().is_relative_to()` containment
+- Reserved metadata fields (`id`, `text`, `source`, `timestamp`, `entity_key`) are protected from overwrite via `PATCH`
+
+### Network exposure
+
+- CORS restricted to localhost origins (ports 8000, 8900) rather than wildcard
+- Qdrant ports bound to `127.0.0.1` in Docker Compose (not exposed to host network)
+- Health endpoint returns minimal info for unauthenticated callers (no stats leakage)
+- Internal error details are logged server-side only; clients receive generic messages
+
+### Runtime
+
+- Docker container runs as non-root user (`memories`)
+- Web UI stores API key in `sessionStorage` (cleared on tab close) rather than `localStorage`
+- Hook scripts use `jq -nc` for safe JSON construction (no shell interpolation)
+- OAuth callback server has explicit timeout (120s)
+- Credential files written with `0600` permissions, parent directories with `0700`
+- Ollama URL validated for `http`/`https` scheme only (SSRF prevention)
+
+### Deployment recommendation
+
+Local-only is the default. If exposed publicly, additionally use HTTPS + strong API key + network controls + WAF/rate-limiting upstream.
 
 ---
 

@@ -89,8 +89,13 @@ class CloudSync:
 
     def download_backup(self, backup_name: str, dest_dir: Path) -> Dict[str, str]:
         """Download a backup from S3 to local directory"""
+        # Validate backup_name to prevent path traversal
+        if ".." in backup_name or "/" in backup_name or "\\" in backup_name:
+            raise ValueError(f"Invalid backup name: {backup_name}")
         dest_dir.mkdir(parents=True, exist_ok=True)
-        backup_dest = dest_dir / backup_name
+        backup_dest = (dest_dir / backup_name).resolve()
+        if not backup_dest.is_relative_to(dest_dir.resolve()):
+            raise ValueError(f"Invalid backup path: {backup_name}")
         backup_dest.mkdir(exist_ok=True)
 
         s3_prefix = f"{self.prefix}{backup_name}/"

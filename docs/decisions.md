@@ -113,6 +113,43 @@ This document captures key architecture decisions for Memories and the tradeoffs
   - smaller/older local models may still produce malformed AUDN decisions
   - fallback behavior on parse failure is ADD-all (same as before)
 
+## D10: Defense-in-Depth Input Validation on All Filesystem Paths
+
+- Status: accepted
+- Decision: validate all user-controlled strings that reach the filesystem with both character-level rejection and `Path.resolve().is_relative_to()` containment checks.
+- Why:
+  - multiple API endpoints accept user-supplied names that become filesystem paths (backup names, index build sources, S3 object keys)
+  - character-level checks (`..`, `/`, `\`) catch obvious traversal attempts
+  - `is_relative_to()` catches edge cases (symlinks, Unicode normalization) that character checks miss
+  - defense-in-depth: both layers must pass
+- Tradeoff:
+  - slightly more code per endpoint
+  - legitimate backup names containing `/` or `\` are rejected (acceptable constraint)
+
+## D11: Restrict CORS to Localhost Origins
+
+- Status: accepted
+- Decision: hardcode CORS `allow_origins` to `localhost:8000`, `localhost:8900`, `127.0.0.1:8000`, `127.0.0.1:8900` instead of `["*"]`.
+- Why:
+  - wildcard CORS exposes the authenticated API to any browser origin
+  - all current legitimate clients (web UI, MCP server) run on localhost
+  - reduces cross-origin attack surface when API key is available in the browser
+- Tradeoff:
+  - custom deployments on non-standard ports must update the origin list (via code change, not env var — intentional friction)
+  - remote web UIs would need a proxy or origin list extension
+
+## D12: Constant-Time Auth with Per-IP Rate Limiting
+
+- Status: accepted
+- Decision: use `hmac.compare_digest` for API key comparison and track per-IP failure counts (10/min limit before 429).
+- Why:
+  - timing attacks on string comparison can leak key bytes
+  - rate limiting prevents brute-force key guessing
+  - simple in-memory tracking avoids external dependencies
+- Tradeoff:
+  - in-memory failure tracking resets on restart
+  - no distributed rate limiting across replicas (acceptable for single-instance deployment)
+
 ---
 
 ## Revisit Triggers

@@ -1077,8 +1077,9 @@ async def add_batch(request: AddBatchRequest):
     try:
         texts = [m.text for m in request.memories]
         sources = [m.source for m in request.memories]
-        metadata_list = [m.metadata for m in request.memories if m.metadata]
-        if len(metadata_list) != len(texts):
+        # Preserve per-item metadata (None for rows without metadata)
+        metadata_list = [m.metadata for m in request.memories]
+        if not any(metadata_list):
             metadata_list = None
 
         ids = memory.add_memories(
@@ -1434,6 +1435,12 @@ async def sync_download(backup_name: Optional[str] = None, confirm: bool = False
             **result,
             "message": f"Downloaded {backup_name} from cloud. Use /restore to apply it."
         }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Backup not found in cloud")
     except Exception as e:
         logger.exception("Cloud download failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -1480,6 +1487,12 @@ async def sync_restore(backup_name: str, confirm: bool = False):
             "restored": restore_result,
             "message": f"Successfully restored {backup_name} from cloud"
         }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Cloud restore failed")
         raise HTTPException(status_code=500, detail="Internal server error")
