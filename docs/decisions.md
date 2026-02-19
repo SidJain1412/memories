@@ -67,7 +67,7 @@ This document captures key architecture decisions for Memories and the tradeoffs
 ## D6: Keep LLM Extraction Optional and Provider-Agnostic
 
 - Status: accepted
-- Decision: extraction lives behind explicit env configuration (`EXTRACT_PROVIDER`), with provider abstraction for Anthropic/OpenAI/Ollama.
+- Decision: extraction lives behind explicit env configuration (`EXTRACT_PROVIDER`), with provider abstraction for Anthropic/OpenAI/ChatGPT Subscription/Ollama.
 - Why:
   - base memory features remain fully local and zero-cost
   - users can choose accuracy/cost/privacy profile
@@ -87,6 +87,31 @@ This document captures key architecture decisions for Memories and the tradeoffs
 - Tradeoff:
   - small CPU overhead after extraction requests
   - allocator trim effectiveness depends on runtime/platform allocator behavior
+
+## D8: Embed OAuth Logic Directly Instead of Gateway Services
+
+- Status: accepted
+- Decision: port ChatGPT OAuth2+PKCE token exchange as pure-stdlib Python helpers (`chatgpt_oauth.py`) rather than running separate gateway services.
+- Why:
+  - zero new pip dependencies (all `urllib.request`, `hashlib`, `secrets`)
+  - no runtime services to manage — token exchange happens at provider init
+  - same pattern as existing Anthropic OAuth auto-detection
+  - CLI tool (`python -m memories auth chatgpt`) handles one-time browser-based setup
+- Tradeoff:
+  - eager token exchange in `__init__` blocks startup on network call (other providers defer to first `complete()`)
+  - refresh token is a long-lived secret stored in `~/.config/memories/env`
+
+## D9: Enable Full AUDN for Ollama via JSON Format Constraint
+
+- Status: accepted
+- Decision: set `supports_audn = True` on Ollama and add `"format": "json"` to the Ollama API payload.
+- Why:
+  - modern local models (Llama 3, Mistral, Qwen) reliably produce structured JSON when constrained
+  - `"format": "json"` is natively supported by Ollama and dramatically reduces parse failures
+  - eliminates the ADD/NOOP-only limitation for local-model users
+- Tradeoff:
+  - smaller/older local models may still produce malformed AUDN decisions
+  - fallback behavior on parse failure is ADD-all (same as before)
 
 ---
 

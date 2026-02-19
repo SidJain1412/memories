@@ -54,7 +54,7 @@ Client (HTTP or MCP)
 
 - LLM-assisted fact extraction from conversation transcripts
 - AUDN decisioning (Add/Update/Delete/Noop)
-- Provider abstraction for Anthropic/OpenAI/Ollama
+- Provider abstraction for Anthropic/OpenAI/ChatGPT Subscription/Ollama
 
 ---
 

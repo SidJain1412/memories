@@ -48,7 +48,7 @@ cd ~/projects/memories
 
 The installer will:
 1. Check Memories service health
-2. Ask which extraction provider to use (Anthropic, OpenAI, Ollama, or skip)
+2. Ask which extraction provider to use (Anthropic, OpenAI, ChatGPT Subscription, Ollama, or skip)
 3. Copy hook scripts to `~/.claude/hooks/memory/`
 4. Merge hook configuration into `~/.claude/settings.json`
 5. Add environment variables to your shell profile
@@ -79,7 +79,12 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 # export EXTRACT_PROVIDER="openai"
 # export OPENAI_API_KEY="sk-..."
 
-# Option 3: Ollama (free, local, extraction only — no AUDN)
+# Option 3: ChatGPT Subscription (free, full AUDN — requires one-time OAuth setup)
+# export EXTRACT_PROVIDER="chatgpt-subscription"
+# export CHATGPT_REFRESH_TOKEN="<from: python -m memories auth chatgpt>"
+# export CHATGPT_CLIENT_ID="<your OpenAI OAuth client ID>"
+
+# Option 4: Ollama (free, local, full AUDN)
 # export EXTRACT_PROVIDER="ollama"
 # export OLLAMA_URL="http://localhost:11434"
 ```
@@ -270,11 +275,13 @@ Codex currently does not expose Claude-style SessionStart/UserPromptSubmit/PreCo
 |----------|------|-------------|-------|---------|
 | **Anthropic** (recommended) | ~$0.001/turn | Full (Add/Update/Delete/Noop) | ~1-2s | Best |
 | **OpenAI** | ~$0.001/turn | Full (Add/Update/Delete/Noop) | ~1-2s | Great |
-| **Ollama** | Free | Extract only (Add/Noop via novelty check) | ~5s | Good |
+| **ChatGPT Subscription** | Free (your subscription) | Full (Add/Update/Delete/Noop) | ~1-2s | Great |
+| **Ollama** | Free | Full (Add/Update/Delete/Noop) | ~5s | Good |
 | **Skip** | Free | None by default (retrieval only) | N/A | N/A |
 
 - **Full AUDN** means the LLM compares new facts against existing memories and decides whether to add, update, delete, or skip
-- **Ollama** can extract facts but uses cosine similarity for dedup instead of LLM reasoning — no updates or deletions of stale memories
+- **ChatGPT Subscription** requires one-time OAuth setup: `python -m memories auth chatgpt --client-id <your-client-id>`
+- **Ollama** uses JSON format constraint to produce structured AUDN decisions from local models
 - **Skip** means hooks retrieve memories. By default no new memories are added; optional fallback add mode exists (`EXTRACT_FALLBACK_ADD=true`) and also activates on provider runtime failures (for example 429/timeouts).
 
 ---
@@ -285,10 +292,12 @@ Codex currently does not expose Claude-style SessionStart/UserPromptSubmit/PreCo
 |----------|---------|-------------|
 | `MEMORIES_URL` | `http://localhost:8900` | Memories service URL |
 | `MEMORIES_API_KEY` | (empty) | API key for Memories service auth |
-| `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `ollama`, or empty to disable |
+| `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `chatgpt-subscription`, `ollama`, or empty to disable |
 | `EXTRACT_MODEL` | (per provider) | Override model. Defaults: `claude-haiku-4-5-20251001`, `gpt-4.1-nano`, `gemma3:4b` |
 | `ANTHROPIC_API_KEY` | (none) | Required when `EXTRACT_PROVIDER=anthropic` |
 | `OPENAI_API_KEY` | (none) | Required when `EXTRACT_PROVIDER=openai` |
+| `CHATGPT_REFRESH_TOKEN` | (none) | Required when `EXTRACT_PROVIDER=chatgpt-subscription` (from `python -m memories auth chatgpt`) |
+| `CHATGPT_CLIENT_ID` | (none) | Required when `EXTRACT_PROVIDER=chatgpt-subscription` |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL (on Linux, use `http://localhost:11434`) |
 | `EXTRACT_FALLBACK_ADD` | `false` | Enable add-only fallback when extraction is disabled or provider calls fail at runtime |
 | `EXTRACT_FALLBACK_MAX_FACTS` | `1` | Max fallback facts per request |
@@ -416,7 +425,7 @@ bash ~/.codex/hooks/memory/memory-codex-notify.sh '{"type":"agent-turn-complete"
 
 ```bash
 # Extraction is disabled. Set EXTRACT_PROVIDER:
-export EXTRACT_PROVIDER="anthropic"  # or openai, ollama
+export EXTRACT_PROVIDER="anthropic"  # or openai, chatgpt-subscription, ollama
 # Then restart your shell and Claude Code session
 ```
 

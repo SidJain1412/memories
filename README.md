@@ -720,7 +720,8 @@ Cursor is supported via manual MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.
 |----------|------|------|-------|
 | Anthropic (recommended) | ~$0.001/turn | Full (Add/Update/Delete/Noop) | ~1-2s |
 | OpenAI | ~$0.001/turn | Full | ~1-2s |
-| Ollama | Free | Extract only (Add/Noop) | ~5s |
+| ChatGPT Subscription | Free (uses your subscription) | Full | ~1-2s |
+| Ollama | Free | Full | ~5s |
 | Skip | Free | None | N/A |
 
 Extraction is optional. Without it, retrieval still works.
@@ -747,7 +748,8 @@ Why it matters:
 ### Cost vs quality
 
 - **Anthropic/OpenAI extraction**: small usage cost (typically around ~$0.001/turn), full AUDN quality.
-- **Ollama extraction**: no API cost, but simplified decisions (`ADD/NOOP` only).
+- **ChatGPT Subscription extraction**: no additional API cost (uses your existing subscription), full AUDN quality.
+- **Ollama extraction**: no API cost, full AUDN quality (with JSON format constraint).
 - **Retrieval only** (`EXTRACT_PROVIDER` unset): no extraction model cost.
 - **Optional fallback writes** (`EXTRACT_FALLBACK_ADD=true`): add-only, heuristic extraction path (no AUDN update/delete) used when extraction is disabled or provider calls fail at runtime.
 
@@ -808,10 +810,12 @@ Ollama uses HTTP directly and does not need the extra SDKs, so `core` is enough 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `ollama`, or empty to disable |
+| `EXTRACT_PROVIDER` | (none) | `anthropic`, `openai`, `chatgpt-subscription`, `ollama`, or empty to disable |
 | `EXTRACT_MODEL` | (per provider) | Model override |
-| `ANTHROPIC_API_KEY` | (none) | Required for Anthropic provider |
+| `ANTHROPIC_API_KEY` | (none) | Required for Anthropic provider (standard key or `sk-ant-oat01-` OAuth token) |
 | `OPENAI_API_KEY` | (none) | Required for OpenAI provider |
+| `CHATGPT_REFRESH_TOKEN` | (none) | Required for ChatGPT Subscription provider (from `python -m memories auth chatgpt`) |
+| `CHATGPT_CLIENT_ID` | (none) | Required for ChatGPT Subscription provider |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama server URL (on Linux, use `http://localhost:11434`) |
 | `EXTRACT_FALLBACK_ADD` | `false` | Enable add-only fallback writes when extraction is disabled or provider calls fail at runtime |
 | `EXTRACT_FALLBACK_MAX_FACTS` | `1` | Max fallback facts to store per extract request |
@@ -958,8 +962,11 @@ memories/
   app.py                  # FastAPI REST API
   memory_engine.py        # Memories engine (search, chunking, BM25, backups)
   onnx_embedder.py        # ONNX Runtime embedder (replaces PyTorch)
-  llm_provider.py         # LLM provider abstraction (Anthropic/OpenAI/Ollama)
+  llm_provider.py         # LLM provider abstraction (Anthropic/OpenAI/ChatGPT Subscription/Ollama)
   llm_extract.py          # Extraction pipeline with AUDN
+  chatgpt_oauth.py        # ChatGPT OAuth2+PKCE token exchange helpers
+  memories_auth.py        # CLI auth tool (python -m memories auth chatgpt/status)
+  __main__.py             # Entry point for python -m memories
   Dockerfile              # Multi-stage Docker build (core/extract targets)
   requirements.txt        # Python dependencies
   requirements-extract.txt # Optional extraction deps (Anthropic/OpenAI SDKs)
@@ -990,7 +997,9 @@ memories/
     QUICKSTART-LLM.md     # LLM-friendly setup guide
   tests/
     test_memory_engine.py # Memory engine tests
-    test_llm_provider.py  # LLM provider tests
+    test_llm_provider.py  # LLM provider tests (incl. ChatGPT Subscription)
+    test_chatgpt_oauth.py # OAuth PKCE + token exchange tests
+    test_memories_auth.py # CLI auth tool tests
     test_llm_extract.py   # Extraction pipeline tests
     test_extract_api.py   # API endpoint tests
     test_web_ui.py        # Web UI route/static tests
