@@ -107,6 +107,10 @@ class CloudSync:
                 file_name = s3_key.split("/")[-1]
                 if not file_name:  # Skip directory markers
                     continue
+                # Prevent path traversal from S3 object keys
+                if ".." in file_name or "/" in file_name or "\\" in file_name:
+                    logger.warning("Skipping suspicious S3 filename: %s", file_name)
+                    continue
 
                 local_path = backup_dest / file_name
                 logger.info("Downloading s3://%s/%s -> %s", self.bucket, s3_key, local_path)

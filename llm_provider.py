@@ -13,6 +13,7 @@ import os
 import json
 import time
 import logging
+import urllib.parse
 import urllib.request
 import urllib.error
 from abc import ABC, abstractmethod
@@ -310,6 +311,9 @@ class OllamaProvider(LLMProvider):
 
     def __init__(self, base_url: str | None = None, model: str | None = None):
         self.base_url = (base_url or "http://host.docker.internal:11434").rstrip("/")
+        parsed = urllib.parse.urlparse(self.base_url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"Invalid OLLAMA_URL scheme: {parsed.scheme!r} (must be http or https)")
         self.model = model or DEFAULT_MODELS["ollama"]
 
     def complete(self, system: str, user: str) -> str:

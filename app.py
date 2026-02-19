@@ -5,13 +5,14 @@ CRUD operations, and structured logging.
 """
 
 import asyncio
+import hmac
 import math
 import os
 import re
 import logging
 import threading
 import time
-from collections import deque
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -142,6 +143,7 @@ EXTRACT_FALLBACK_NOVELTY_THRESHOLD = min(
 
 extract_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=EXTRACT_QUEUE_MAX)
 extract_jobs: Dict[str, Dict[str, Any]] = {}
+extract_jobs_lock: asyncio.Lock = asyncio.Lock()
 extract_workers: List[asyncio.Task] = []
 memory_trimmer = MemoryTrimmer(
     enabled=MEMORY_TRIM_ENABLED,
@@ -207,15 +209,29 @@ embedder_reload_metrics: Dict[str, Any] = {
 
 # -- Auth ---------------------------------------------------------------------
 
+_auth_failures: Dict[str, list] = defaultdict(list)
+
 async def verify_api_key(request: Request):
-    """Check X-API-Key header if API_KEY is configured."""
+    """Check X-API-Key header if API_KEY is configured.
+
+    Uses constant-time comparison and per-IP rate limiting on failures.
+    """
     if not API_KEY:
         return  # No auth configured
     path = request.url.path
     if path in {"/health", "/health/ready", "/ui"} or path.startswith("/ui/"):
         return  # Allow unauthenticated health checks + UI shell/static files
+
+    # Rate limit failed auth attempts (10 per minute per IP)
+    ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    _auth_failures[ip] = [t for t in _auth_failures[ip] if now - t < 60]
+    if len(_auth_failures[ip]) >= 10:
+        raise HTTPException(status_code=429, detail="Too many failed authentication attempts")
+
     key = request.headers.get("X-API-Key", "")
-    if key != API_KEY:
+    if not hmac.compare_digest(key.encode(), API_KEY.encode()):
+        _auth_failures[ip].append(now)
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
@@ -740,7 +756,12 @@ if UI_DIR.exists():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:8900",
+        "http://127.0.0.1:8900",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -867,10 +888,19 @@ class SupersedeRequest(BaseModel):
 # -- Endpoints ----------------------------------------------------------------
 
 @app.get("/health")
-async def health():
-    """Lightweight health check (no filesystem I/O)"""
-    stats = memory.stats_light()
-    return {"status": "ok", "service": "memories", "version": "2.0.0", **stats}
+async def health(request: Request):
+    """Lightweight health check (no filesystem I/O).
+
+    Unauthenticated callers get minimal response; authenticated callers get full stats.
+    """
+    base = {"status": "ok", "service": "memories", "version": "2.0.0"}
+    # Only include detailed stats for authenticated callers
+    if not API_KEY or hmac.compare_digest(
+        request.headers.get("X-API-Key", "").encode(), API_KEY.encode()
+    ):
+        stats = memory.stats_light()
+        return {**base, **stats}
+    return base
 
 
 @app.get("/health/ready")
@@ -958,7 +988,7 @@ async def reload_embedder():
             manual_metrics["last_error"] = str(e)
             manual_metrics["last_error_at"] = _utc_now_iso()
         logger.exception("Embedder reload failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # -- Search -------------------------------------------------------------------
@@ -986,7 +1016,7 @@ async def search(request: SearchRequest):
         return {"query": request.query, "results": results, "count": len(results)}
     except Exception as e:
         logger.exception("Search failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/search/batch")
@@ -1014,7 +1044,7 @@ async def search_batch(request: SearchBatchRequest):
         return {"results": outputs, "count": len(outputs)}
     except Exception as e:
         logger.exception("Batch search failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # -- Memory CRUD --------------------------------------------------------------
@@ -1037,7 +1067,7 @@ async def add_memory(request: AddMemoryRequest):
         }
     except Exception as e:
         logger.exception("Add memory failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/add-batch")
@@ -1065,7 +1095,7 @@ async def add_batch(request: AddBatchRequest):
         }
     except Exception as e:
         logger.exception("Add batch failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.delete("/memory/{memory_id}")
@@ -1079,7 +1109,7 @@ async def delete_memory(memory_id: int):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Delete failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/memory/{memory_id}")
@@ -1091,7 +1121,7 @@ async def get_memory(memory_id: int):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Get memory failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/get-batch")
@@ -1102,7 +1132,7 @@ async def get_memory_batch(request: MemoryGetBatchRequest):
         return {**result, "count": len(result["memories"])}
     except Exception as e:
         logger.exception("Get batch failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/delete-by-source")
@@ -1114,7 +1144,7 @@ async def delete_by_source(request: DeleteBySourceRequest):
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete by source failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/delete-batch")
@@ -1126,7 +1156,7 @@ async def delete_batch(request: DeleteBatchRequest):
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete batch failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/delete-by-prefix")
@@ -1138,7 +1168,7 @@ async def delete_by_prefix(request: DeleteByPrefixRequest):
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Delete by prefix failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.patch("/memory/{memory_id}")
@@ -1158,7 +1188,7 @@ async def patch_memory(memory_id: int, request: PatchMemoryRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Patch memory failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/upsert")
@@ -1174,7 +1204,7 @@ async def upsert_memory(request: UpsertMemoryRequest):
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Upsert memory failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/upsert-batch")
@@ -1194,7 +1224,7 @@ async def upsert_memory_batch(request: UpsertBatchRequest):
         return {"success": True, **result}
     except Exception as e:
         logger.exception("Upsert batch failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/memory/is-novel")
@@ -1211,7 +1241,7 @@ async def is_novel(request: IsNovelRequest):
         }
     except Exception as e:
         logger.exception("Is-novel check failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # -- Browse / List ------------------------------------------------------------
@@ -1241,8 +1271,14 @@ async def build_index(request: BuildIndexRequest):
                 *[str(p) for p in (workspace / "memory").glob("*.md")],
             ]
         else:
-            workspace = Path(WORKSPACE_DIR)
-            sources = [str(workspace / s) for s in request.sources]
+            workspace = Path(WORKSPACE_DIR).resolve()
+            sources = []
+            for s in request.sources:
+                full_path = (workspace / s).resolve()
+                if full_path.is_relative_to(workspace):
+                    sources.append(str(full_path))
+                else:
+                    logger.warning("Path traversal blocked in index build: %s", s)
 
         sources = [s for s in sources if Path(s).exists()]
 
@@ -1251,7 +1287,7 @@ async def build_index(request: BuildIndexRequest):
         return {"success": True, **result, "message": "Index rebuilt successfully"}
     except Exception as e:
         logger.exception("Index build failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # -- Deduplication ------------------------------------------------------------
@@ -1267,7 +1303,7 @@ async def deduplicate(request: DeduplicateRequest):
         return result
     except Exception as e:
         logger.exception("Deduplication failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # -- Backups ------------------------------------------------------------------
@@ -1287,7 +1323,7 @@ async def list_backups():
         }
     except Exception as e:
         logger.exception("List backups failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/backup")
@@ -1302,7 +1338,7 @@ async def create_backup(prefix: str = Query("manual", max_length=50)):
         }
     except Exception as e:
         logger.exception("Backup failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/restore")
@@ -1316,7 +1352,7 @@ async def restore_backup(request: RestoreRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Restore failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # -- Cloud Sync ---------------------------------------------------------------
@@ -1345,7 +1381,7 @@ async def sync_status():
         }
     except Exception as e:
         logger.exception("Sync status check failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/sync/upload")
@@ -1368,7 +1404,7 @@ async def sync_upload():
         }
     except Exception as e:
         logger.exception("Manual upload failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/sync/download")
@@ -1400,7 +1436,7 @@ async def sync_download(backup_name: Optional[str] = None, confirm: bool = False
         }
     except Exception as e:
         logger.exception("Cloud download failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/sync/snapshots")
@@ -1414,7 +1450,7 @@ async def sync_snapshots():
         return {"snapshots": snapshots, "count": len(snapshots)}
     except Exception as e:
         logger.exception("List remote snapshots failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/sync/restore/{backup_name}")
@@ -1446,7 +1482,7 @@ async def sync_restore(backup_name: str, confirm: bool = False):
         }
     except Exception as e:
         logger.exception("Cloud restore failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # -- Extraction endpoints -----------------------------------------------------
@@ -1584,7 +1620,7 @@ async def memory_supersede(request: SupersedeRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("Supersede failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/extract/status")

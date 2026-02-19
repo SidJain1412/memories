@@ -356,7 +356,11 @@ class MemoryEngine:
 
     def restore_from_backup(self, backup_name: str) -> Dict[str, Any]:
         """Restore metadata/config and rebuild Qdrant vectors."""
+        if ".." in backup_name or "/" in backup_name or "\\" in backup_name:
+            raise ValueError(f"Invalid backup name: {backup_name}")
         backup_path = self.backup_dir / backup_name
+        if not backup_path.resolve().is_relative_to(self.backup_dir.resolve()):
+            raise ValueError(f"Invalid backup path: {backup_name}")
         if not backup_path.exists():
             raise FileNotFoundError(f"Backup '{backup_name}' not found")
 
@@ -628,8 +632,9 @@ class MemoryEngine:
                     updated_fields.append("source")
 
                 if metadata_patch:
+                    _reserved = {"id", "text", "source", "timestamp", "entity_key"}
                     for key, value in metadata_patch.items():
-                        if key == "id":
+                        if key in _reserved:
                             continue
                         meta[key] = value
                     updated_fields.append("metadata")

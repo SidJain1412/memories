@@ -46,8 +46,9 @@ if [ -z "$MESSAGES" ]; then
   exit 0
 fi
 
+BODY=$(jq -nc --arg msgs "$MESSAGES" --arg src "codex/$PROJECT" '{"messages": $msgs, "source": $src, "context": "after_agent"}')
 curl -sf -X POST "$MEMORIES_URL/memory/extract" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $MEMORIES_API_KEY" \
-  -d "{\"messages\": $(echo "$MESSAGES" | jq -Rs), \"source\": \"codex/$PROJECT\", \"context\": \"after_agent\"}" \
+  -d "$BODY" \
   > /dev/null 2>&1 || true

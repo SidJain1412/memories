@@ -35,7 +35,7 @@ def write_env_file(
     api_key: str | None = None,
 ) -> None:
     """Write or update the env file, preserving non-provider vars."""
-    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     existing_lines: list[str] = []
     if env_path.exists():
         for line in env_path.read_text().splitlines():
@@ -60,6 +60,7 @@ def write_env_file(
 
     all_lines = existing_lines + new_lines
     env_path.write_text("\n".join(all_lines) + "\n")
+    env_path.chmod(0o600)  # Owner read/write only — contains secrets
 
 
 def get_auth_status() -> dict:
@@ -166,12 +167,13 @@ def run_chatgpt_auth(client_id: str, port: int = DEFAULT_CALLBACK_PORT) -> dict:
             pass  # Suppress HTTP logs
 
     server = HTTPServer(("127.0.0.1", port), CallbackHandler)
+    server.timeout = 120  # 2 minute timeout — abort if user abandons flow
 
     print(f"\nOpening browser for ChatGPT login...")
     print(f"If the browser doesn't open, visit:\n  {auth_url}\n")
     webbrowser.open(auth_url)
 
-    print("Waiting for callback...")
+    print("Waiting for callback (timeout: 2 minutes)...")
     server.serve_forever()
     server.server_close()
 

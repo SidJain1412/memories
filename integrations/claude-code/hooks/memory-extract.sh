@@ -25,8 +25,9 @@ CWD=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
 PROJECT=$(basename "$CWD")
 
 # POST to extraction endpoint (fire-and-forget, async hook)
+BODY=$(jq -nc --arg msgs "$MESSAGES" --arg src "claude-code/$PROJECT" '{"messages": $msgs, "source": $src, "context": "stop"}')
 curl -sf -X POST "$MEMORIES_URL/memory/extract" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $MEMORIES_API_KEY" \
-  -d "{\"messages\": $(echo "$MESSAGES" | jq -Rs), \"source\": \"claude-code/$PROJECT\", \"context\": \"stop\"}" \
+  -d "$BODY" \
   > /dev/null 2>&1 || true

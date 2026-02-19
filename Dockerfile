@@ -69,7 +69,12 @@ COPY llm_extract.py .
 COPY app.py .
 COPY webui ./webui
 
-RUN mkdir -p /data/backups /data/model-cache
+# Create non-root user for runtime
+RUN useradd -r -m -s /bin/false memories && \
+    mkdir -p /data/backups /data/model-cache && \
+    chown -R memories:memories /data /opt/model-cache /app
+
+USER memories
 
 EXPOSE 8000
 
