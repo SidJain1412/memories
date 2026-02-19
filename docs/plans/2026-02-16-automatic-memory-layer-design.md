@@ -223,7 +223,9 @@ When using Ollama (local, free), AUDN is simplified:
 
 ## Part 2: Client-Side Integrations
 
-### Claude Code / Codex hooks
+### Claude Code hooks (historical Codex assumption superseded)
+
+> Historical note (updated February 19, 2026): Codex uses `~/.codex/config.toml` with `notify` + MCP, not Claude's 5-hook `settings.json` lifecycle.
 
 Five shell scripts in `integrations/claude-code/hooks/`:
 
@@ -358,17 +360,10 @@ Memories — Automatic Memory Layer Setup
 
 ### Codex
 
-Codex supports Claude Code hooks format. The install is:
-
-```bash
-# Option A: Symlink (if memories repo is cloned)
-ln -s /path/to/memories/integrations/claude-code/hooks ~/.codex/hooks/memory
-
-# Option B: Use the installer
-./integrations/claude-code/install.sh --codex
-```
-
-The `--codex` flag writes to Codex's config location instead of Claude Code's.
+Codex integration is `config.toml`-native:
+- `notify` hook for after-turn extraction (`memory-codex-notify.sh`)
+- MCP server registration for `memory_search`, `memory_add`, etc.
+- developer instructions to bias retrieval usage each turn
 
 ### OpenClaw
 
@@ -386,8 +381,8 @@ Per the Mem0/Supermemory research:
 
 | Feature | Included? | Why |
 |---------|-----------|-----|
-| Automatic retrieval | Yes | Hooks inject on every prompt |
-| Automatic extraction | Yes | Hooks extract after every turn |
+| Automatic retrieval | Partial | Claude hooks inject automatically; Codex uses MCP + developer instructions |
+| Automatic extraction | Yes | Claude hooks + Codex after-turn `notify` extraction |
 | AUDN (smart updates) | Yes (API providers) | LLM decides add/update/delete/noop |
 | Knowledge graph | No | Flat memories are fine for single-user dev |
 | Temporal decay | No | Not needed at <1000 memories |
@@ -415,7 +410,7 @@ Net effect: ~1500 extra tokens/turn in context (retrieval), ~$0.002/turn for ext
 5. `GET /extract/status` endpoint in `app.py`
 6. Hook scripts (5 shell scripts)
 7. `install.sh` installer
-8. Codex install path
+8. Codex `config.toml` integration (notify + MCP)
 9. OpenClaw skill update
 10. Tests
 11. Documentation (README update)

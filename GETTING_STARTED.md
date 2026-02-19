@@ -46,13 +46,18 @@ docker compose up -d --build memories
 | Ollama extraction (`EXTRACT_PROVIDER=ollama`) | Free | Learns new facts with simplified decisions (`ADD/NOOP`) |
 | Anthropic/OpenAI extraction | Small API cost (~$0.001/turn typical) | Full AUDN (`ADD/UPDATE/DELETE/NOOP`) and better long-term memory quality |
 
-## 4) Install hooks (recommended)
+## 4) Install integrations (recommended)
 
 ```bash
 ./integrations/claude-code/install.sh --auto
 ```
 
-This auto-detects and configures Claude Code, Codex, and OpenClaw where available.
+This auto-detects and configures:
+- Claude Code hooks (`~/.claude/settings.json`)
+- Codex native integration (`~/.codex/config.toml` + notify hook)
+- OpenClaw skill (`~/.openclaw/skills/memories/SKILL.md`)
+
+Cursor is supported via MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.json`) and is currently manual.
 
 For guided LLM setup, use:
 - [`integrations/QUICKSTART-LLM.md`](integrations/QUICKSTART-LLM.md)

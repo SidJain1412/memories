@@ -2,7 +2,7 @@
 
 Local semantic memory for AI assistants. Zero-cost, <50ms, hybrid BM25+vector search.
 
-Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
+Works with **Claude Code**, **Claude Desktop**, **Claude Chat**, **Codex**, **Cursor**, **ChatGPT**, **OpenClaw**, and anything that can call HTTP or MCP.
 
 Start here:
 - [Getting Started (10-15 min)](GETTING_STARTED.md)
@@ -39,9 +39,9 @@ The service runs at **http://localhost:8900**. API docs at http://localhost:8900
 ## Architecture
 
 ```
-AI Client (Claude, Codex, ChatGPT, OpenClaw)
+AI Client (Claude, Codex, Cursor, ChatGPT, OpenClaw)
     |
-    |-- MCP protocol (Claude Code / Desktop)
+    |-- MCP protocol (Claude Code / Desktop / Codex / Cursor)
     |-- REST API (everything else)
     v
 MCP Server (mcp-server/index.js)
@@ -169,7 +169,7 @@ curl -X POST https://memory.yourdomain.com/search \
 
 ### Codex (OpenAI)
 
-Codex supports MCP natively.
+Codex supports MCP natively via `~/.codex/config.toml`.
 
 **Setup:**
 
@@ -180,7 +180,57 @@ cd memories/mcp-server
 npm install
 ```
 
-2. Add to your Codex MCP config:
+2. Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.memories]
+command = "node"
+args = ["/path/to/memories/mcp-server/index.js"]
+
+[mcp_servers.memories.env]
+MEMORIES_URL = "http://localhost:8900"
+MEMORIES_API_KEY = "your-api-key-here"
+```
+
+3. Restart Codex. The `memory_search`, `memory_add`, and other tools will be available.
+
+**Automatic memory layer for Codex:**
+
+```bash
+./integrations/claude-code/install.sh --codex
+```
+
+This configures:
+- MCP server registration in `~/.codex/config.toml`
+- `notify` hook script at `~/.codex/hooks/memory/memory-codex-notify.sh` for after-turn extraction
+- default `developer_instructions` (if not already set) to bias `memory_search` usage on each turn
+
+Codex currently exposes an after-turn `notify` hook, not Claude's 5-event hook surface.
+
+**Usage** (Codex will discover the tools automatically):
+
+- "Search memory for how we handle error logging"
+- "Store this architecture decision in memory"
+- "List all memories from the project-setup source"
+
+---
+
+### Cursor
+
+Cursor supports MCP with the same server.
+
+**Setup:**
+
+1. Install dependencies:
+
+```bash
+cd memories/mcp-server
+npm install
+```
+
+2. Add to Cursor MCP config:
+- Global: `~/.cursor/mcp.json`
+- Project: `.cursor/mcp.json`
 
 ```json
 {
@@ -197,13 +247,9 @@ npm install
 }
 ```
 
-3. Restart Codex. The `memory_search`, `memory_add`, and other tools will be available.
+3. Restart Cursor.
 
-**Usage** (Codex will discover the tools automatically):
-
-- "Search memory for how we handle error logging"
-- "Store this architecture decision in memory"
-- "List all memories from the project-setup source"
+Cursor support is MCP-first today (no automatic hook installer path yet).
 
 ---
 
@@ -551,7 +597,7 @@ Full OpenAPI schema at http://localhost:8900/docs.
 
 ## MCP Tools Reference
 
-When connected via MCP (Claude Code, Claude Desktop, Codex), these tools are available:
+When connected via MCP (Claude Code, Claude Desktop, Codex, Cursor), these tools are available:
 
 | Tool | Description |
 |------|-------------|
@@ -606,9 +652,12 @@ Default compose files now include:
 
 ## Automatic Memory Layer
 
-Makes memory retrieval and extraction automatic — no manual search/store needed. Hooks inject relevant memories into every prompt and extract facts from every conversation turn.
+Memories supports automatic retrieval/extraction, with client-specific behavior:
+- Claude Code: full 5-hook lifecycle (session start, each prompt, stop, pre-compact, session end)
+- Codex: native `notify` hook after each completed turn + MCP/developer instructions for retrieval
+- OpenClaw: skill-driven retrieval/extraction flow
 
-### How it works
+### Claude Code Hook Lifecycle
 
 | Event | Hook | What happens |
 |-------|------|-------------|
@@ -617,6 +666,15 @@ Makes memory retrieval and extraction automatic — no manual search/store neede
 | After response | `memory-extract.sh` | Extracts facts and stores via AUDN pipeline |
 | Before compaction | `memory-flush.sh` | Aggressive extraction before context loss |
 | Session end | `memory-commit.sh` | Final extraction pass |
+
+### Codex Lifecycle (Native)
+
+| Event | Mechanism | What happens |
+|-------|-----------|--------------|
+| After each completed turn | `notify` -> `memory-codex-notify.sh` | Sends user+assistant exchange to `/memory/extract` asynchronously |
+| On new turns | MCP tools + developer instructions | Encourages focused `memory_search` before implementation-heavy responses |
+
+Codex does not currently expose the Claude-style SessionStart/UserPromptSubmit/PreCompact/SessionEnd hook callbacks in `config.toml`.
 
 ### Quick setup
 
@@ -627,8 +685,10 @@ Makes memory retrieval and extraction automatic — no manual search/store neede
 
 This detects and configures any available targets on your machine:
 - Claude Code hooks (`~/.claude/settings.json`)
-- Codex hooks (`~/.codex/settings.json`)
+- Codex native config (`~/.codex/config.toml`)
 - OpenClaw skill (`~/.openclaw/skills/memories/SKILL.md`)
+
+Cursor is supported via manual MCP config (`~/.cursor/mcp.json` or `.cursor/mcp.json`).
 
 **Target only Claude or Codex:**
 ```bash
@@ -652,7 +712,7 @@ This detects and configures any available targets on your machine:
 | Ollama | Free | Extract only (Add/Noop) | ~5s |
 | Skip | Free | None | N/A |
 
-Extraction is optional. Without it, hooks still retrieve memories — they just don't learn new ones automatically.
+Extraction is optional. Without it, retrieval still works — it just doesn't learn new memories automatically.
 
 ### AUDN in plain English
 
@@ -892,7 +952,9 @@ memories/
   integrations/
     claude-code/
       install.sh          # Auto-detect installer (Claude/Codex/OpenClaw)
-      hooks/              # 5 hook scripts + hooks.json
+      hooks/              # Claude Code 5-hook scripts + hooks.json
+    codex/
+      memory-codex-notify.sh # Codex notify hook script (after-turn extraction)
     claude-code.md        # Claude Code guide
     openclaw-skill.md     # OpenClaw SKILL.md
     QUICKSTART-LLM.md     # LLM-friendly setup guide

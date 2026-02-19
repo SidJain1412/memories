@@ -1634,7 +1634,7 @@ Interactive installer that:
 5. Merges hook config into `~/.claude/settings.json`
 6. Adds env vars to `~/.zshrc` or `~/.bashrc`
 
-The script should handle `--codex` flag for Codex install path (`~/.codex/` instead of `~/.claude/`).
+The script should handle `--codex` using Codex-native config (`~/.codex/config.toml` with `notify` + MCP), not Claude `settings.json` hooks.
 
 Full implementation: ~120 lines of bash with read prompts, curl validation, jq config merging, and colored output.
 
@@ -1686,7 +1686,7 @@ The file `integrations/QUICKSTART-LLM.md` is a standalone guide designed to be f
 
 - Prerequisites (service running, API key, jq)
 - Claude Code setup (installer + manual)
-- Codex setup (symlink or --codex flag)
+- Codex setup (`config.toml` notify + MCP via `--codex` or manual config)
 - OpenClaw setup (skill-based)
 - Hook behavior table
 - Provider comparison table
