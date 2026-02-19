@@ -14,6 +14,7 @@ import logging
 import urllib.request
 import urllib.error
 from abc import ABC, abstractmethod
+from chatgpt_oauth import refresh_tokens, exchange_id_token_for_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +227,79 @@ class OpenAIProvider(LLMProvider):
             return False
 
 
+class ChatGPTSubscriptionProvider(LLMProvider):
+    """ChatGPT subscription provider — OAuth token exchange for ephemeral API key.
+
+    Uses a refresh_token to periodically obtain a fresh OpenAI API key via:
+      1. refresh_token → id_token (standard OAuth refresh)
+      2. id_token → API key (token exchange grant)
+
+    Once the API key is obtained, delegates to the OpenAI SDK (same as OpenAIProvider).
+    """
+
+    provider_name = "chatgpt-subscription"
+    supports_audn = True
+
+    def __init__(
+        self,
+        refresh_token: str,
+        client_id: str,
+        model: str | None = None,
+    ):
+        try:
+            import openai
+        except ImportError:
+            raise ImportError(
+                "openai package required. Install with: pip install openai>=1.50.0"
+            )
+        self.model = model or DEFAULT_MODELS["openai"]
+        self._refresh_token = refresh_token
+        self._client_id = client_id
+        self._api_key: str | None = None
+        self._expires_at: float = 0.0
+        self._openai_module = openai
+        self.client = None  # type: ignore
+        self._refresh_api_key()
+
+    def _refresh_api_key(self) -> None:
+        """Refresh tokens and obtain a new OpenAI API key."""
+        tokens = refresh_tokens(self._refresh_token, self._client_id)
+        id_token = tokens.get("id_token", "")
+        if tokens.get("refresh_token"):
+            self._refresh_token = tokens["refresh_token"]
+        self._api_key = exchange_id_token_for_api_key(id_token, self._client_id)
+        expires_in = tokens.get("expires_in", 3600)
+        self._expires_at = time.time() + max(60, expires_in - 300)
+        self.client = self._openai_module.OpenAI(api_key=self._api_key)
+        logger.info("ChatGPT subscription: API key refreshed (expires_in=%ds)", expires_in)
+
+    def _ensure_fresh(self) -> None:
+        if time.time() >= self._expires_at:
+            logger.info("ChatGPT subscription: API key expired, refreshing...")
+            self._refresh_api_key()
+
+    def complete(self, system: str, user: str) -> str:
+        self._ensure_fresh()
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=1024,
+        )
+        return response.choices[0].message.content
+
+    def health_check(self) -> bool:
+        try:
+            self._ensure_fresh()
+            self.complete("Reply with OK", "health check")
+            return True
+        except Exception as e:
+            logger.warning("ChatGPT subscription health check failed: %s", e)
+            return False
+
+
 class OllamaProvider(LLMProvider):
     """Ollama local provider with AUDN support."""
 
@@ -287,9 +361,23 @@ def get_provider() -> LLMProvider | None:
             raise ValueError("OPENAI_API_KEY required when EXTRACT_PROVIDER=openai")
         return OpenAIProvider(api_key=api_key, model=model)
 
+    elif provider_name == "chatgpt-subscription":
+        refresh_token = os.environ.get("CHATGPT_REFRESH_TOKEN", "").strip()
+        client_id = os.environ.get("CHATGPT_CLIENT_ID", "").strip()
+        if not refresh_token:
+            raise ValueError("CHATGPT_REFRESH_TOKEN required when EXTRACT_PROVIDER=chatgpt-subscription")
+        if not client_id:
+            raise ValueError("CHATGPT_CLIENT_ID required when EXTRACT_PROVIDER=chatgpt-subscription")
+        return ChatGPTSubscriptionProvider(
+            refresh_token=refresh_token, client_id=client_id, model=model,
+        )
+
     elif provider_name == "ollama":
         base_url = os.environ.get("OLLAMA_URL", "").strip() or None
         return OllamaProvider(base_url=base_url, model=model)
 
     else:
-        raise ValueError(f"Unknown EXTRACT_PROVIDER: '{provider_name}'. Use: anthropic, openai, or ollama")
+        raise ValueError(
+            f"Unknown EXTRACT_PROVIDER: '{provider_name}'. "
+            "Use: anthropic, openai, chatgpt-subscription, or ollama"
+        )

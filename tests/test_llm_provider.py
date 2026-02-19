@@ -268,3 +268,105 @@ class TestProviderInterface:
             assert hasattr(provider, "provider_name")
             assert hasattr(provider, "model")
             assert hasattr(provider, "supports_audn")
+
+
+class TestChatGPTSubscriptionProvider:
+    """Test ChatGPTSubscriptionProvider OAuth token exchange + OpenAI SDK."""
+
+    def test_factory_creates_chatgpt_subscription_provider(self):
+        env = {
+            "EXTRACT_PROVIDER": "chatgpt-subscription",
+            "CHATGPT_REFRESH_TOKEN": "fake-refresh-token",
+            "CHATGPT_CLIENT_ID": "fake-client-id",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            mock_tokens = {
+                "id_token": "fake-id",
+                "refresh_token": "new-refresh",
+                "expires_in": 3600,
+            }
+            with patch("llm_provider.refresh_tokens", return_value=mock_tokens), \
+                 patch("llm_provider.exchange_id_token_for_api_key", return_value="sk-fake-key"), \
+                 patch.dict("sys.modules", {"openai": MagicMock()}):
+                from llm_provider import get_provider
+                provider = get_provider()
+                assert provider is not None
+                assert provider.provider_name == "chatgpt-subscription"
+                assert provider.supports_audn is True
+
+    def test_requires_refresh_token(self):
+        env = {"EXTRACT_PROVIDER": "chatgpt-subscription", "CHATGPT_CLIENT_ID": "cid"}
+        with patch.dict(os.environ, env, clear=True):
+            from llm_provider import get_provider
+            with pytest.raises(ValueError, match="CHATGPT_REFRESH_TOKEN"):
+                get_provider()
+
+    def test_requires_client_id(self):
+        env = {"EXTRACT_PROVIDER": "chatgpt-subscription", "CHATGPT_REFRESH_TOKEN": "rt"}
+        with patch.dict(os.environ, env, clear=True):
+            from llm_provider import get_provider
+            with pytest.raises(ValueError, match="CHATGPT_CLIENT_ID"):
+                get_provider()
+
+    def test_complete_refreshes_expired_key(self):
+        """When API key is expired, complete() should refresh before calling OpenAI."""
+        from llm_provider import ChatGPTSubscriptionProvider
+        mock_openai = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "test response"
+        mock_openai.OpenAI.return_value.chat.completions.create.return_value = mock_response
+
+        with patch.dict("sys.modules", {"openai": mock_openai}), \
+             patch("llm_provider.refresh_tokens", return_value={
+                 "id_token": "new-id", "refresh_token": "new-rt", "expires_in": 3600,
+             }) as mock_refresh, \
+             patch("llm_provider.exchange_id_token_for_api_key", return_value="sk-new"):
+            provider = ChatGPTSubscriptionProvider(
+                refresh_token="rt", client_id="cid",
+            )
+            # Force expiry
+            provider._expires_at = time.time() - 10
+            result = provider.complete("sys", "usr")
+            assert result == "test response"
+            # Should have refreshed (init + expiry refresh = 2 calls)
+            assert mock_refresh.call_count == 2
+
+    def test_default_model(self):
+        from llm_provider import ChatGPTSubscriptionProvider
+        mock_openai = MagicMock()
+        with patch.dict("sys.modules", {"openai": mock_openai}), \
+             patch("llm_provider.refresh_tokens", return_value={
+                 "id_token": "id", "refresh_token": "rt", "expires_in": 3600,
+             }), \
+             patch("llm_provider.exchange_id_token_for_api_key", return_value="sk-k"):
+            provider = ChatGPTSubscriptionProvider(refresh_token="rt", client_id="cid")
+            assert provider.model == "gpt-4.1-nano"
+
+    def test_custom_model(self):
+        from llm_provider import ChatGPTSubscriptionProvider
+        mock_openai = MagicMock()
+        with patch.dict("sys.modules", {"openai": mock_openai}), \
+             patch("llm_provider.refresh_tokens", return_value={
+                 "id_token": "id", "refresh_token": "rt", "expires_in": 3600,
+             }), \
+             patch("llm_provider.exchange_id_token_for_api_key", return_value="sk-k"):
+            provider = ChatGPTSubscriptionProvider(
+                refresh_token="rt", client_id="cid", model="gpt-4o"
+            )
+            assert provider.model == "gpt-4o"
+
+    def test_has_required_interface(self):
+        from llm_provider import ChatGPTSubscriptionProvider
+        mock_openai = MagicMock()
+        with patch.dict("sys.modules", {"openai": mock_openai}), \
+             patch("llm_provider.refresh_tokens", return_value={
+                 "id_token": "id", "refresh_token": "rt", "expires_in": 3600,
+             }), \
+             patch("llm_provider.exchange_id_token_for_api_key", return_value="sk-k"):
+            provider = ChatGPTSubscriptionProvider(refresh_token="rt", client_id="cid")
+            assert hasattr(provider, "complete")
+            assert hasattr(provider, "health_check")
+            assert hasattr(provider, "provider_name")
+            assert hasattr(provider, "model")
+            assert hasattr(provider, "supports_audn")
