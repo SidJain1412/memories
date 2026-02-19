@@ -564,6 +564,7 @@ GET  /stats
 GET  /health
 GET  /health/ready
 GET  /metrics
+POST /maintenance/embedder/reload
 ```
 
 ### Backups
@@ -629,6 +630,15 @@ When connected via MCP (Claude Code, Claude Desktop, Codex, Cursor), these tools
 | `MEMORY_TRIM_ENABLED` | `true` | Run post-extract GC/allocator trim |
 | `MEMORY_TRIM_COOLDOWN_SEC` | `15` | Minimum seconds between trim attempts |
 | `MEMORY_TRIM_PERIODIC_SEC` | `5` | Periodic trim probe interval (seconds). Set `0` to disable background trim loop. |
+| `EMBEDDER_AUTO_RELOAD_ENABLED` | `false` | Enable periodic auto-reload of in-process embedder runtime |
+| `EMBEDDER_AUTO_RELOAD_RSS_KB_THRESHOLD` | `1200000` | RSS threshold (KB) required before auto-reload decisions |
+| `EMBEDDER_AUTO_RELOAD_CHECK_SEC` | `15` | Seconds between auto-reload checks |
+| `EMBEDDER_AUTO_RELOAD_HIGH_STREAK` | `3` | Consecutive high-RSS checks required before trigger |
+| `EMBEDDER_AUTO_RELOAD_MIN_INTERVAL_SEC` | `900` | Cooldown between reload attempts |
+| `EMBEDDER_AUTO_RELOAD_WINDOW_SEC` | `3600` | Rolling window size for reload cap |
+| `EMBEDDER_AUTO_RELOAD_MAX_PER_WINDOW` | `2` | Max reloads allowed per rolling window |
+| `EMBEDDER_AUTO_RELOAD_MAX_ACTIVE_REQUESTS` | `2` | Skip reload when active HTTP requests exceed this |
+| `EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH` | `0` | Skip reload when extract queue depth exceeds this |
 | `METRICS_LATENCY_SAMPLES` | `200` | Per-route latency sample window for `/metrics` percentiles |
 | `METRICS_TREND_SAMPLES` | `120` | Memory trend sample window exposed by `/metrics` |
 | `PORT` | `8000` | Internal service port |
@@ -640,6 +650,7 @@ Default compose files now include:
 - `MALLOC_ARENA_MAX=2` to reduce glibc arena fragmentation in multithreaded workloads
 - `MALLOC_TRIM_THRESHOLD_=131072` and `MALLOC_MMAP_THRESHOLD_=131072` to encourage earlier allocator release
 - extraction env passthrough (`EXTRACT_PROVIDER`, `EXTRACT_MODEL`, provider keys/URL) so deploys keep extraction enabled when set in shell or `.env`
+- embedder auto-reload env passthrough with anti-loop defaults (`EMBEDDER_AUTO_RELOAD_*`)
 
 ### MCP Server Environment
 
@@ -823,7 +834,12 @@ Mitigations built in:
 - `/memory/extract` request size limit (`MAX_EXTRACT_MESSAGE_CHARS`)
 - bounded in-flight extraction (`EXTRACT_MAX_INFLIGHT`)
 - post-extract + periodic memory reclamation (`MEMORY_TRIM_ENABLED`, `MEMORY_TRIM_COOLDOWN_SEC`, `MEMORY_TRIM_PERIODIC_SEC`)
+- optional auto-reload controller for the embedder runtime (`EMBEDDER_AUTO_RELOAD_*`)
 - bounded AUDN payload sizes (`EXTRACT_MAX_FACTS`, `EXTRACT_MAX_FACT_CHARS`, `EXTRACT_SIMILAR_TEXT_CHARS`)
+
+Observability:
+- `/metrics` includes `embedder_reload.auto` and `embedder_reload.manual` counters/state
+- manual reload endpoint: `POST /maintenance/embedder/reload`
 
 Reference benchmark: `docs/benchmarks/2026-02-17-memory-reclamation.md`
 

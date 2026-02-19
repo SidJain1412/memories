@@ -73,6 +73,17 @@ Expected:
 - `enabled: true` when extraction is configured
 - selected `provider` and `model`
 
+### Optional: verify embedder auto-reload guardrails
+
+```bash
+curl -s http://localhost:8900/metrics | jq '.embedder_reload'
+```
+
+Expected (when enabled in compose env):
+- `enabled: true`
+- policy values under `policy`
+- runtime counters under `auto` and `manual`
+
 ## 6) First memory smoke test
 
 ```bash

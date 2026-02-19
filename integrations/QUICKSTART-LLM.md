@@ -297,6 +297,17 @@ Codex currently does not expose Claude-style SessionStart/UserPromptSubmit/PreCo
 | `EXTRACT_FALLBACK_NOVELTY_THRESHOLD` | `0.88` | Novelty threshold for fallback adds |
 | `MEMORIES_HOOKS_DIR` | `~/.claude/hooks/memory` | Override Claude hooks location |
 
+Service-level runtime guardrails (set in Docker compose env):
+- `EMBEDDER_AUTO_RELOAD_ENABLED` (`true`/`false`)
+- `EMBEDDER_AUTO_RELOAD_RSS_KB_THRESHOLD`
+- `EMBEDDER_AUTO_RELOAD_CHECK_SEC`
+- `EMBEDDER_AUTO_RELOAD_HIGH_STREAK`
+- `EMBEDDER_AUTO_RELOAD_MIN_INTERVAL_SEC`
+- `EMBEDDER_AUTO_RELOAD_WINDOW_SEC`
+- `EMBEDDER_AUTO_RELOAD_MAX_PER_WINDOW`
+- `EMBEDDER_AUTO_RELOAD_MAX_ACTIVE_REQUESTS`
+- `EMBEDDER_AUTO_RELOAD_MAX_QUEUE_DEPTH`
+
 ---
 
 ## Verifying It Works
@@ -319,6 +330,9 @@ curl -s -X POST http://localhost:8900/memory/add \
 ```bash
 # Check extraction status
 curl -s -H "X-API-Key: $MEMORIES_API_KEY" http://localhost:8900/extract/status | jq .
+
+# Check auto-reload metrics
+curl -s -H "X-API-Key: $MEMORIES_API_KEY" http://localhost:8900/metrics | jq '.embedder_reload'
 
 # Expected (if configured):
 # {"enabled": true, "provider": "anthropic", "model": "claude-haiku-4-5-20251001", "status": "healthy"}
