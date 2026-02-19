@@ -249,7 +249,7 @@ npm install
 
 3. Restart Cursor.
 
-Cursor support is MCP-first today (no automatic hook installer path yet).
+Cursor also supports the full hook lifecycle via its "Third-party skills" feature. Run `./integrations/claude-code/install.sh --cursor` to install hooks alongside the MCP config.
 
 ---
 
@@ -667,10 +667,11 @@ Default compose files now include:
 
 Memories supports automatic retrieval/extraction, with client-specific behavior:
 - Claude Code: full 5-hook lifecycle (session start, each prompt, stop, pre-compact, session end)
+- Cursor: same 5-hook lifecycle via Third-party skills (loads from `~/.claude/settings.json`)
 - Codex: native `notify` hook after each completed turn + MCP/developer instructions for retrieval
 - OpenClaw: skill-driven retrieval/extraction flow
 
-### Claude Code Hook Lifecycle
+### Claude Code / Cursor Hook Lifecycle
 
 | Event | Hook | What happens |
 |-------|------|-------------|
@@ -679,6 +680,8 @@ Memories supports automatic retrieval/extraction, with client-specific behavior:
 | After response | `memory-extract.sh` | Extracts facts and stores via AUDN pipeline |
 | Before compaction | `memory-flush.sh` | Aggressive extraction before context loss |
 | Session end | `memory-commit.sh` | Final extraction pass |
+
+**Cursor compatibility note:** Cursor sends `workspace_roots[]` (not `cwd`) and `transcript_path` (not inline `messages`) in hook payloads. The hook scripts handle both formats automatically — no separate configuration needed.
 
 ### Codex Lifecycle (Native)
 
