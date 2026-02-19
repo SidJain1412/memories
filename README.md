@@ -980,8 +980,8 @@ memories/
   memories_auth.py        # CLI auth tool (python -m memories auth chatgpt/status)
   __main__.py             # Entry point for python -m memories
   Dockerfile              # Multi-stage Docker build (core/extract targets)
-  requirements.txt        # Python dependencies
-  requirements-extract.txt # Optional extraction deps (Anthropic/OpenAI SDKs)
+  pyproject.toml          # Python dependencies (uv)
+  uv.lock                 # Locked dependency resolutions
   docker-compose.snippet.yml
   docs/
     architecture.md       # System architecture and runtime flows
