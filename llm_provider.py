@@ -1,11 +1,13 @@
 """LLM provider abstraction for memory extraction.
 
-Supports Anthropic, OpenAI, and Ollama. Configured via environment variables:
-  EXTRACT_PROVIDER: "anthropic", "openai", or "ollama" (empty = disabled)
+Supports five provider sources via environment variables:
+  EXTRACT_PROVIDER: "anthropic", "openai", "chatgpt-subscription", or "ollama" (empty = disabled)
   EXTRACT_MODEL: model name (defaults per provider)
-  ANTHROPIC_API_KEY: required for anthropic (standard key or sk-ant-oat01- OAuth token)
-  OPENAI_API_KEY: required for openai
-  OLLAMA_URL: ollama server URL (default: http://host.docker.internal:11434)
+
+  anthropic:              ANTHROPIC_API_KEY (standard sk-ant-api03- or OAuth sk-ant-oat01- token)
+  openai:                 OPENAI_API_KEY
+  chatgpt-subscription:   CHATGPT_REFRESH_TOKEN + CHATGPT_CLIENT_ID (OAuth token exchange)
+  ollama:                 OLLAMA_URL (default: http://host.docker.internal:11434)
 """
 import os
 import json

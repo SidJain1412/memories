@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import secrets
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -69,8 +70,14 @@ def _post_token(params: dict) -> dict:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Token request failed ({e.code}): {error_body}"
+        ) from e
 
 
 def exchange_code_for_tokens(
